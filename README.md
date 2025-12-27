@@ -4,7 +4,7 @@ A simple and fast Git repository browser.
 View branches, commit diffs, and search through all commit messages.
 
 ## Development Setup
-sudo dnf install -y gcc rust rustfmt rust-analyzer cargo gtk4-devel openssl-devel libadwaita-devel meson ninja-build
+sudo dnf install -y gcc rust rustfmt rust-analyzer cargo gtk4-devel openssl-devel libadwaita-devel meson ninja-build gtksourceview5-devel
 
 ## Building
 
