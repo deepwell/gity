@@ -121,6 +121,10 @@ impl WelcomeView {
             return;
         }
 
+        // Cap the number of columns by item count (1..4), while still allowing
+        // the layout to wrap down on smaller window widths.
+        let max_cols: u32 = (recent_repos.len().min(4)).max(1) as u32;
+
         // Add "Recent Repositories" header
         let header = gtk::Label::builder()
             .label("Recent Repositories")
@@ -135,7 +139,7 @@ impl WelcomeView {
             .selection_mode(gtk::SelectionMode::Single)
             .activate_on_single_click(false)
             .homogeneous(true)
-            .max_children_per_line(3)
+            .max_children_per_line(max_cols)
             .min_children_per_line(1)
             .column_spacing(12)
             .row_spacing(12)
@@ -246,7 +250,9 @@ impl WelcomeView {
         let folder_label = gtk::Label::builder()
             .label(&repo.folder_name)
             .halign(gtk::Align::Start)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .single_line_mode(true)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .max_width_chars(40)
             .build();
         folder_label.add_css_class("title-3");
 

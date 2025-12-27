@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::APP_ID;
 use crate::git;
 
-const MAX_RECENT_REPOS: usize = 9;
+const MAX_RECENT_REPOS: usize = 12;
 
 /// Information about a recent repository for display
 pub struct RecentRepo {
