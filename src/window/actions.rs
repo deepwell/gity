@@ -1,5 +1,6 @@
 use gio::ActionEntry;
 use gtk::{gio, glib, prelude::*};
+use adw::prelude::AdwDialogExt;
 
 use super::repo;
 use super::search;
@@ -114,17 +115,16 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
     // About window action
     let action_about = ActionEntry::builder("about")
         .activate(|window: &gtk::ApplicationWindow, _, _| {
-            let about = adw::AboutWindow::builder()
+            let about = adw::AboutDialog::builder()
                 .application_name(super::APP_NAME)
                 .application_icon(APP_ID)
                 .developer_name(DEVELOPER_NAME)
                 .version(env!("CARGO_PKG_VERSION"))
-                .comments("A simple and performant git viewer.")
-                .license_type(gtk::License::Unknown)
+                .website("https://github.com/deepwell/gity")
+                .issue_url("https://github.com/deepwell/gity/issues")
+                .license_type(gtk::License::Gpl30)
                 .build();
-            about.set_transient_for(Some(window));
-            about.set_modal(true);
-            about.present();
+            about.present(Some(window));
         })
         .build();
 
