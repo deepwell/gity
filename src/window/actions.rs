@@ -48,8 +48,8 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
         })
         .build();
 
-    // Help overlay action
-    let builder = gtk::Builder::from_resource("/com/markdeepwell/gity/gtk/help-overlay.ui");
+    // Keyboard shortcuts overlay action
+    let builder = gtk::Builder::from_resource("/com/markdeepwell/gity/gtk/shortcuts.ui");
     let shortcuts_window: gtk::ShortcutsWindow = builder
         .object("help_overlay")
         .expect("Could not get shortcuts window");
