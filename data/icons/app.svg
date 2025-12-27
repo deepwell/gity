@@ -1,0 +1,64 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg-gradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3a3c41"/>
+      <stop offset="100%" stop-color="#1e2024"/>
+    </linearGradient>
+    <linearGradient id="graph-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="10%" stop-color="#4cd964"/>
+      <stop offset="50%" stop-color="#34aadc"/>
+      <stop offset="90%" stop-color="#9b59b6"/>
+    </linearGradient>
+    <style>
+      .graph-line {
+        fill: none;
+        stroke: url(#graph-gradient);
+        stroke-width: 24;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .node-outer {
+        fill: url(#graph-gradient);
+      }
+      .node-inner {
+        fill: #2a2c30;
+      }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" rx="100" ry="100" fill="url(#bg-gradient)"/>
+
+  <g>
+    <path class="graph-line" d="M 120,460 L 120,240 L 260,80 L 380,220 L 260,360 L 260,460"/>
+    <path class="graph-line" d="M 180,140 L 260,220 L 460,460"/>
+    <path class="graph-line" d="M 180,380 L 120,240"/>
+    <path class="graph-line" d="M 380,220 L 460,300 L 380,460"/>
+  </g>
+
+  <g>
+    <circle class="node-outer" cx="180" cy="140" r="24"/>
+    <circle class="node-inner" cx="180" cy="140" r="12"/>
+    <circle class="node-outer" cx="260" cy="80" r="24"/>
+    <circle class="node-inner" cx="260" cy="80" r="12"/>
+    <circle class="node-outer" cx="120" cy="240" r="24"/>
+    <circle class="node-inner" cx="120" cy="240" r="12"/>
+    <circle class="node-outer" cx="260" cy="220" r="24"/>
+    <circle class="node-inner" cx="260" cy="220" r="12"/>
+    <circle class="node-outer" cx="380" cy="220" r="24"/>
+    <circle class="node-inner" cx="380" cy="220" r="12"/>
+    <circle class="node-outer" cx="180" cy="380" r="24"/>
+    <circle class="node-inner" cx="180" cy="380" r="12"/>
+    <circle class="node-outer" cx="260" cy="360" r="24"/>
+    <circle class="node-inner" cx="260" cy="360" r="12"/>
+    <circle class="node-outer" cx="460" cy="300" r="24"/>
+    <circle class="node-inner" cx="460" cy="300" r="12"/>
+    <circle class="node-outer" cx="120" cy="460" r="24"/>
+    <circle class="node-inner" cx="120" cy="460" r="12"/>
+    <circle class="node-outer" cx="260" cy="460" r="24"/>
+    <circle class="node-inner" cx="260" cy="460" r="12"/>
+    <circle class="node-outer" cx="380" cy="460" r="24"/>
+    <circle class="node-inner" cx="380" cy="460" r="12"/>
+    <circle class="node-outer" cx="460" cy="460" r="24"/>
+    <circle class="node-inner" cx="460" cy="460" r="12"/>
+  </g>
+</svg>

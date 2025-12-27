@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="com.markdeepwell.gity" path="/com/markdeepwell/gity/">
+    <key name="window-width" type="i">
+      <default>700</default>
+      <summary>Window width</summary>
+      <description>The width of the application window</description>
+    </key>
+    <key name="window-height" type="i">
+      <default>1500</default>
+      <summary>Window height</summary>
+      <description>The height of the application window</description>
+    </key>
+    <key name="is-maximized" type="b">
+      <default>false</default>
+      <summary>Window maximized state</summary>
+      <description>Whether the application window is maximized</description>
+    </key>
+    <key name="diff-paned-position" type="i">
+      <default>700</default>
+      <summary>Diff paned position</summary>
+      <description>The position of the divider between commit list and diff view</description>
+    </key>
+    <key name="branch-panel-width" type="i">
+      <default>200</default>
+      <summary>Branch panel width</summary>
+      <description>The width of the branch panel</description>
+    </key>
+    <key name="recent-repositories" type="as">
+      <default>[]</default>
+      <summary>Recent repositories</summary>
+      <description>List of recently opened Git repository paths</description>
+    </key>
+  </schema>
+</schemalist>
+

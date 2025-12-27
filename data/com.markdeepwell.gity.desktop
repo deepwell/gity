@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=GitY
+Comment=Git repository browser
+Exec=gity
+Icon=com.markdeepwell.gity
+Terminal=false
+Categories=Development;RevisionControl;
+StartupNotify=true
+MimeType=x-scheme-handler/git;
+
