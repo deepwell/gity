@@ -8,7 +8,7 @@ fn main() {
     );
 
     // Tell Cargo to rerun this build script if the schema file changes
-    println!("cargo:rerun-if-changed=data/com.markdeepwell.gity.gschema.xml");
+    println!("cargo:rerun-if-changed=data/com.markdeepwell.GitY.gschema.xml");
 
     // Compile GSettings schemas
     // For development, compile to both debug and release directories

@@ -9,7 +9,7 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 
-pub const APP_ID: &str = "com.markdeepwell.gity";
+pub const APP_ID: &str = "com.markdeepwell.GitY";
 pub const DEVELOPER_NAME: &str = "Mark Deepwell";
 
 fn main() -> glib::ExitCode {

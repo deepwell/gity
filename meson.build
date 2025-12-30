@@ -65,7 +65,7 @@ schema_dir = meson.current_build_dir() / 'schemas'
 # gnome.compile_schemas compiles to builddir by default
 schema_compile = gnome.compile_schemas(
   build_by_default: true,
-  depend_files: files('data/com.markdeepwell.gity.gschema.xml'),
+  depend_files: files('data/com.markdeepwell.GitY.gschema.xml'),
 )
 
 # The compiled schema will be in the build directory as gschemas.compiled
@@ -73,13 +73,13 @@ schema_compile = gnome.compile_schemas(
 
 # Schema installation
 install_data(
-  'data/com.markdeepwell.gity.gschema.xml',
+  'data/com.markdeepwell.GitY.gschema.xml',
   install_dir: get_option('datadir') / 'glib-2.0' / 'schemas',
 )
 
 # Desktop file installation
 install_data(
-  'data/com.markdeepwell.gity.desktop',
+  'data/com.markdeepwell.GitY.desktop',
   install_dir: get_option('datadir') / 'applications',
 )
 
@@ -87,7 +87,7 @@ install_data(
 install_data(
   'data/icons/app.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps',
-  rename: 'com.markdeepwell.gity.svg',
+  rename: 'com.markdeepwell.GitY.svg',
 )
 
 # Compile schemas in install location
