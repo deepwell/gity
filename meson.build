@@ -1,42 +1,5 @@
 project('gity', 'rust',
-  # Single source of truth for the app version: Cargo.toml.
-  #
-  # We parse Cargo.toml at configure time so Meson packaging/install logic can
-  # use the same version without duplicating it here.
-  version: run_command(
-    'python3',
-    [
-      '-c',
-      '''
-import pathlib
-import sys
-
-lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-
-# Extract version from the [package] section only (avoid matching dependency versions).
-in_package = False
-for raw in lines:
-    s = raw.strip()
-    if not s or s.startswith('#'):
-        continue
-    if s.startswith('[') and s.endswith(']'):
-        in_package = (s == '[package]')
-        continue
-    if in_package:
-        key, sep, val = s.partition('=')
-        if sep and key.strip() == 'version':
-            v = val.strip().strip('"').strip("'")
-            if not v:
-                raise SystemExit('Cargo.toml package version is empty')
-            print(v)
-            raise SystemExit(0)
-
-raise SystemExit('Cargo.toml missing package version in [package] section')
-''',
-      meson.current_source_dir() / 'Cargo.toml',
-    ],
-    check: true,
-  ).stdout().strip(),
+  version: '0.2.1',
   license: 'GPL-3.0-or-later',
   meson_version: '>= 1.0.0',
 )
@@ -45,10 +8,10 @@ raise SystemExit('Cargo.toml missing package version in [package] section')
 gnome = import('gnome')
 
 # Dependencies (for pkg-config checks, actual Rust deps come from Cargo.toml)
-gtk4_dep = dependency('gtk4', version: '>= 4.12')
-adw_dep = dependency('libadwaita-1', version: '>= 1.5')
-glib_dep = dependency('glib-2.0')
-gio_dep = dependency('gio-2.0')
+dependency('gtk4', version: '>= 4.12')
+dependency('libadwaita-1', version: '>= 1.5')
+dependency('glib-2.0')
+dependency('gio-2.0')
 
 # Find cargo
 cargo = find_program('cargo', required: true)
@@ -132,25 +95,5 @@ cargo_build = custom_target(
     'GSETTINGS_SCHEMA_DIR': '@0@'.format(meson.current_build_dir()),
   },
   console: true,
-)
-
-# Install script that copies the binary
-install_script_path = meson.current_source_dir() / 'meson-install.sh'
-bindir_str = get_option('bindir')
-meson.add_install_script(
-  install_script_path,
-  build_profile,
-  bindir_str,
-)
-
-# For development, create a runnable target
-run_script_path = meson.current_source_dir() / 'meson-run.sh'
-run_target(
-  'run',
-  command: [
-    run_script_path,
-    build_profile,
-  ],
-  depends: [cargo_build],
 )
 
