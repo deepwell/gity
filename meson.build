@@ -97,3 +97,15 @@ cargo_build = custom_target(
   console: true,
 )
 
+meson.add_install_script(
+  'install',
+  '-Dm755',
+  meson.current_build_dir() / 'target' / build_profile / 'gity',
+  get_option('prefix') / get_option('bindir') / 'gity',
+)
+
+gnome.post_install(
+  glib_compile_schemas: true,
+  gtk_update_icon_cache: true,
+  update_desktop_database: true,
+)
