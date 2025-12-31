@@ -1,8 +1,4 @@
 project('gity', 'rust',
-  # Single source of truth for the app version: Cargo.toml.
-  #
-  # We parse Cargo.toml at configure time so Meson packaging/install logic can
-  # use the same version without duplicating it here.
   version: run_command(
     'python3',
     [
@@ -45,10 +41,10 @@ raise SystemExit('Cargo.toml missing package version in [package] section')
 gnome = import('gnome')
 
 # Dependencies (for pkg-config checks, actual Rust deps come from Cargo.toml)
-gtk4_dep = dependency('gtk4', version: '>= 4.12')
-adw_dep = dependency('libadwaita-1', version: '>= 1.5')
-glib_dep = dependency('glib-2.0')
-gio_dep = dependency('gio-2.0')
+dependency('gtk4', version: '>= 4.12')
+dependency('libadwaita-1', version: '>= 1.5')
+dependency('glib-2.0')
+dependency('gio-2.0')
 
 # Find cargo
 cargo = find_program('cargo', required: true)
@@ -134,23 +130,15 @@ cargo_build = custom_target(
   console: true,
 )
 
-# Install script that copies the binary
-install_script_path = meson.current_source_dir() / 'meson-install.sh'
-bindir_str = get_option('bindir')
 meson.add_install_script(
-  install_script_path,
-  build_profile,
-  bindir_str,
+  'install',
+  '-Dm755',
+  meson.current_build_dir() / 'target' / build_profile / 'gity',
+  get_option('prefix') / get_option('bindir') / 'gity',
 )
 
-# For development, create a runnable target
-run_script_path = meson.current_source_dir() / 'meson-run.sh'
-run_target(
-  'run',
-  command: [
-    run_script_path,
-    build_profile,
-  ],
-  depends: [cargo_build],
+gnome.post_install(
+  glib_compile_schemas: true,
+  gtk_update_icon_cache: true,
+  update_desktop_database: true,
 )
-

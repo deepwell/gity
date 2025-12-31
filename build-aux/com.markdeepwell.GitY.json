@@ -1,0 +1,44 @@
+{
+  "app-id": "com.markdeepwell.GitY",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "49",
+  "sdk": "org.gnome.Sdk",
+  "command": "gity",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "finish-args": [
+    "--device=dri",
+    "--filesystem=host",
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=session-bus",
+    "--socket=system-bus",
+    "--socket=wayland"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/gity/cargo"
+    },
+    "build-args": [
+      "--share=network"
+    ]
+  },
+  "modules": [
+    {
+      "name" : "gity",
+      "builddir" : true,
+      "buildsystem" : "meson",
+      "config-opts" : [
+        "-Dbuildtype=debug"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../"
+        }
+      ]
+    }
+  ]
+}

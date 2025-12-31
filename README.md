@@ -14,7 +14,7 @@ sudo dnf install -y gcc rust rustfmt rust-analyzer cargo gtk4-devel openssl-deve
 ## Building
 
 ### Development Build and Run
-To build and run the development version in one command:
+To build and run the development version:
 ```bash
 cargo run
 ```
