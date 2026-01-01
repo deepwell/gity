@@ -88,17 +88,22 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
     let action_find_next = search_controller.action_find_next(ui, state);
     let action_find_previous = search_controller.action_find_previous(ui, state);
 
+    // Refresh action - created as SimpleAction so we can enable/disable it based on repo state
+    let action_refresh = gio::SimpleAction::new("refresh", None);
+    action_refresh.set_enabled(state.is_repo_loaded());
     let ui_for_refresh_action = ui.clone();
     let state_for_refresh_action = state.clone();
-    let action_refresh = ActionEntry::builder("refresh")
-        .activate(move |_, _, _| {
+    action_refresh.connect_activate(move |_, _| {
+        if state_for_refresh_action.is_repo_loaded() {
             repo::refresh_repo(
                 &ui_for_refresh_action,
                 &state_for_refresh_action,
                 super::APP_NAME,
             );
-        })
-        .build();
+        }
+    });
+    window.add_action(&action_refresh);
+    ui.set_refresh_action(action_refresh);
 
     let ui_for_close_repo_action = ui.clone();
     let state_for_close_repo_action = state.clone();
@@ -136,7 +141,6 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
         action_hide_search,
         action_find_next,
         action_find_previous,
-        action_refresh,
         action_close_repo,
         action_about,
     ]);

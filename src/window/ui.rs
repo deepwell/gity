@@ -1,6 +1,8 @@
 use gtk::{gio, prelude::*};
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::ui::{RepoView, WelcomeView};
 
@@ -20,6 +22,9 @@ pub struct WindowUi {
 
     // Welcome screen (new component-based approach)
     welcome_view: WelcomeView,
+
+    // Action that requires a repository to be loaded
+    refresh_action: Rc<RefCell<Option<gio::SimpleAction>>>,
 }
 
 impl WindowUi {
@@ -106,7 +111,13 @@ impl WindowUi {
             stack,
             repo_view,
             welcome_view,
+            refresh_action: Rc::new(RefCell::new(None)),
         }
+    }
+
+    /// Store the refresh action so we can enable/disable it based on repo state.
+    pub fn set_refresh_action(&self, action: gio::SimpleAction) {
+        *self.refresh_action.borrow_mut() = Some(action);
     }
 
     /// Set a callback for when a recent repository card is clicked.
@@ -127,6 +138,11 @@ impl WindowUi {
     pub fn set_repo_controls_visible(&self, visible: bool) {
         self.search_button.set_visible(visible);
         self.close_repo_button.set_visible(visible);
+
+        // Enable/disable the refresh action based on whether a repo is loaded
+        if let Some(ref action) = *self.refresh_action.borrow() {
+            action.set_enabled(visible);
+        }
     }
 
     pub fn show_main(&self) {

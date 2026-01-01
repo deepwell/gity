@@ -20,4 +20,8 @@ impl AppState {
         *self.current_path.borrow_mut() = None;
         *self.current_branch.borrow_mut() = None;
     }
+
+    pub fn is_repo_loaded(&self) -> bool {
+        self.current_path.borrow().is_some()
+    }
 }
