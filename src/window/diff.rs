@@ -483,6 +483,18 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     view.set_left_margin(0);
     view.set_right_margin(0);
 
+    // Horizontal scrolling (per file):
+    // The outer diff panel already provides vertical scrolling. Wrapping each file's text view in a
+    // scrolled window with vertical scrolling disabled gives us a performant horizontal scrollbar
+    // without introducing nested vertical scrolling.
+    let h_scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .build();
+    h_scroller.set_hexpand(true);
+    h_scroller.set_child(Some(&view));
+
     // Two-widget layout: gutter on the left, text on the right
     let row = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -490,7 +502,7 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
         .build();
     row.set_spacing(8);
     row.append(&gutter_view);
-    row.append(&view);
+    row.append(&h_scroller);
 
     row
 }
