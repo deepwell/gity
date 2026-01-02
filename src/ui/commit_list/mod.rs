@@ -439,7 +439,7 @@ fn start_commit_paging(
             }
         };
 
-        let opts = git::CommitQueryOptions::for_branch(path_for_thread, &commit_ref);
+        let opts = git::CommitQueryOptions::for_branch(&commit_ref);
         let mut walker = match git::CommitWalker::new(&repo, opts) {
             Ok(w) => w,
             Err(e) => {

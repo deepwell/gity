@@ -191,7 +191,7 @@ impl SearchController {
                     *current_cancel_for_timeout.borrow_mut() = Some(cancel_token.clone());
 
                     // Perform search in background thread
-                    let rx = crate::search::SearchHandler::perform_search_async_cancelable(
+                    let rx = handler_for_timeout.perform_search_async_cancelable(
                         path_for_timeout.clone(),
                         branch_name_for_timeout.clone(),
                         query_for_timeout.clone(),

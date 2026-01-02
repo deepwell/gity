@@ -49,10 +49,6 @@ pub struct GitCommit {
     pub date: String,
 }
 
-pub struct GitTreeResult {
-    pub commits: Vec<GitCommit>,
-}
-
 impl fmt::Debug for GitCommit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GitCommit")
@@ -77,22 +73,14 @@ pub enum CommitSort {
 }
 
 /// Explicit options for listing commits from a repository.
-///
-/// This replaces the old "fake structopt Args + run_impl" pattern. It's intentionally
-/// a plain Rust struct (not CLI-derived), so UI code can construct it directly.
 #[derive(Debug, Clone)]
 pub struct CommitQueryOptions {
-    /// Repository to open.
-    pub repo_path: PathBuf,
     /// One or more revspecs to push/hide (e.g. `["main"]`, `["HEAD"]`, `["^deadbeef", "main"]`).
     pub revspecs: Vec<String>,
     /// Optional pathspec filters (only include commits touching these paths).
     pub pathspecs: Vec<String>,
     pub sort: CommitSort,
     pub reverse: bool,
-    pub skip: usize,
-    /// If set, limit total commits returned.
-    pub max_count: Option<usize>,
     pub author_contains: Option<String>,
     pub committer_contains: Option<String>,
     pub message_contains: Option<String>,
@@ -104,15 +92,12 @@ pub struct CommitQueryOptions {
 }
 
 impl CommitQueryOptions {
-    pub fn for_branch(repo_path: impl Into<PathBuf>, branch_ref: &str) -> Self {
+    pub fn for_branch(branch_ref: &str) -> Self {
         Self {
-            repo_path: repo_path.into(),
             revspecs: vec![branch_ref.to_string()],
             pathspecs: Vec::new(),
             sort: CommitSort::None,
             reverse: false,
-            skip: 0,
-            max_count: None,
             author_contains: None,
             committer_contains: None,
             message_contains: None,
@@ -120,22 +105,6 @@ impl CommitQueryOptions {
             max_parents_exclusive: None,
         }
     }
-}
-
-pub fn read_git_tree_from_path(path: &str, branch_ref: &str) -> Result<GitTreeResult, Error> {
-    let opts = CommitQueryOptions::for_branch(PathBuf::from(path), branch_ref);
-    let commits = list_commits(&opts, None)?;
-    Ok(GitTreeResult { commits })
-}
-
-pub fn read_git_tree_from_path_cancelable(
-    path: &str,
-    branch_ref: &str,
-    cancel: Arc<AtomicBool>,
-) -> Result<GitTreeResult, Error> {
-    let opts = CommitQueryOptions::for_branch(PathBuf::from(path), branch_ref);
-    let commits = list_commits(&opts, Some(cancel))?;
-    Ok(GitTreeResult { commits })
 }
 
 /// Shared commit-walking core used by both the UI commit list pager and search.
@@ -315,32 +284,6 @@ impl<'repo> CommitWalker<'repo> {
         }
         Ok((out, false))
     }
-}
-
-fn list_commits(
-    opts: &CommitQueryOptions,
-    cancel: Option<Arc<AtomicBool>>,
-) -> Result<Vec<GitCommit>, Error> {
-    let repo = Repository::open(&opts.repo_path)?;
-    let mut walker = CommitWalker::new(&repo, opts.clone())?;
-
-    let mut skipped: usize = 0;
-    let mut out: Vec<GitCommit> = Vec::new();
-    let limit = opts.max_count.unwrap_or(!0);
-
-    while out.len() < limit {
-        let Some(res) = walker.next(cancel.as_ref()) else {
-            break;
-        };
-        let commit = res?;
-        if skipped < opts.skip {
-            skipped += 1;
-            continue;
-        }
-        out.push(commit);
-    }
-
-    Ok(out)
 }
 
 fn sig_matches(sig: &Signature, contains: Option<&str>) -> bool {
