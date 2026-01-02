@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.markdeepwell.GitY</id>
+
+  <name>GitY</name>
+  <summary>A simple and fast Git repository browser</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <description>
+    <p>
+      A simple and fast Git repository browser. View full git history for all branches, commit diffs, and search by commit messages or git sha.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.markdeepwell.GitY.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/repository-screen.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/welcome-screen.png</image>
+    </screenshot>
+  </screenshots>
+</component>
