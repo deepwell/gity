@@ -79,6 +79,12 @@ install_data(
   install_dir: get_option('datadir') / 'applications',
 )
 
+# AppStream metainfo installation
+install_data(
+  'data/com.markdeepwell.GitY.metainfo.xml',
+  install_dir: get_option('datadir') / 'metainfo',
+)
+
 # Icon installation (SVG for scalable icons)
 install_data(
   'data/icons/app.svg',
