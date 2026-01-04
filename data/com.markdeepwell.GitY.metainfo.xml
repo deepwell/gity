@@ -3,22 +3,32 @@
   <id>com.markdeepwell.GitY</id>
 
   <name>GitY</name>
-  <summary>A simple and fast Git repository browser</summary>
+  <summary>View and search full Git history</summary>
+  <description>
+    <p>
+      A simple and fast Git repository browser to view Git branches and commit diffs.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>View all branches and commits for local Git repositories</li>
+      <li>Search by commit message or Git SHA</li>
+      <li>Coloured Git diff viewer</li>
+      <li>Remembers recently opened Git repositories</li>
+    </ul>
+  </description>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
 
   <supports>
-    <control>pointing</control>
     <control>keyboard</control>
+    <control>pointing</control>
     <control>touch</control>
   </supports>
 
-  <description>
-    <p>
-      A simple and fast Git repository browser. View full git history for all branches, commit diffs, and search by commit messages or git sha.
-    </p>
-  </description>
+  <url type="homepage">https://github.com/deepwell/gity</url>
+  <url type="bugtracker">https://github.com/deepwell/gity/issues</url>
+  <url type="vcs-browser">https://github.com/deepwell/gity</url>
 
   <launchable type="desktop-id">com.markdeepwell.GitY.desktop</launchable>
   <screenshots>
