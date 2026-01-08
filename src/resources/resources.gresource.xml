@@ -2,5 +2,6 @@
 <gresources>
   <gresource prefix="/com/markdeepwell/gity/">
     <file compressed="true" preprocess="xml-stripblanks" alias="gtk/shortcuts.ui">shortcuts.ui</file>
+    <file compressed="true">style.css</file>
   </gresource>
 </gresources>
