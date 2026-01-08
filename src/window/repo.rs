@@ -53,15 +53,30 @@ pub fn load_repo(
             }
         });
 
-    match git::get_local_branches(path.to_str().unwrap()) {
-        Ok(branches) => {
-            ui.repo_view
-                .branch_panel
-                .update_branches(&branches, checked_out_branch.as_deref());
-            let _ = ui.repo_view.branch_panel.select_branch(&effective_branch);
+    let path_str = path.to_str().unwrap();
+
+    // Fetch branches
+    let branches = match git::get_local_branches(path_str) {
+        Ok(b) => b,
+        Err(e) => {
+            Logger::error(&format!("Error reading branches: {}", e));
+            Vec::new()
         }
-        Err(e) => Logger::error(&format!("Error reading branches: {}", e)),
-    }
+    };
+
+    // Fetch tags
+    let tags = match git::get_tags(path_str) {
+        Ok(t) => t,
+        Err(e) => {
+            Logger::error(&format!("Error reading tags: {}", e));
+            Vec::new()
+        }
+    };
+
+    ui.repo_view
+        .branch_panel
+        .update_refs(&branches, &tags, checked_out_branch.as_deref());
+    let _ = ui.repo_view.branch_panel.select_ref(&effective_branch);
 }
 
 pub fn open_repo_dialog(
@@ -135,7 +150,7 @@ pub fn close_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     ui.title_label.set_text(app_name);
 
     ui.repo_view.commit_list.clear();
-    ui.repo_view.branch_panel.update_branches(&[], None);
+    ui.repo_view.branch_panel.update_refs(&[], &[], None);
 
     // Reset search UI
     ui.repo_view.search_bar.set_search_mode(false);
@@ -172,7 +187,7 @@ pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
 
     // Clear panels while the new repo loads.
     ui.repo_view.commit_list.clear();
-    ui.repo_view.branch_panel.update_branches(&[], None);
+    ui.repo_view.branch_panel.update_refs(&[], &[], None);
 
     // Reset search UI.
     ui.repo_view.search_bar.set_search_mode(false);

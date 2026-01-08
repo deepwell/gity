@@ -351,6 +351,52 @@ pub fn get_local_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
     Ok(branch_infos)
 }
 
+#[derive(Clone)]
+pub struct TagInfo {
+    pub name: String,
+    pub commit_time: DateTime<Utc>,
+}
+
+pub fn get_tags(path: &str) -> Result<Vec<TagInfo>, Error> {
+    let repo = Repository::open(path)?;
+    let mut tag_infos = Vec::new();
+
+    repo.tag_foreach(|oid, name_bytes| {
+        // Tag names come as "refs/tags/<name>", strip the prefix
+        let name = std::str::from_utf8(name_bytes)
+            .ok()
+            .and_then(|s| s.strip_prefix("refs/tags/"))
+            .map(|s| s.to_string());
+
+        if let Some(tag_name) = name {
+            // Try to get the commit time for this tag
+            // For annotated tags, we need to peel to the commit
+            // For lightweight tags, the oid is already the commit
+            if let Ok(obj) = repo.find_object(oid, None) {
+                let commit_opt = obj
+                    .peel(ObjectType::Commit)
+                    .ok()
+                    .and_then(|c| c.into_commit().ok());
+
+                if let Some(commit) = commit_opt {
+                    let time = commit.time();
+                    let commit_time = Utc
+                        .timestamp_opt(time.seconds() + (time.offset_minutes() as i64) * 60, 0)
+                        .unwrap();
+
+                    tag_infos.push(TagInfo {
+                        name: tag_name,
+                        commit_time,
+                    });
+                }
+            }
+        }
+        true // continue iteration
+    })?;
+
+    Ok(tag_infos)
+}
+
 pub struct CommitMetadata {
     pub author_name: String,
     pub author_email: String,

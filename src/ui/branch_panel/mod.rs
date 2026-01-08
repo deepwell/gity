@@ -1,71 +1,76 @@
-//! Branch panel UI component for displaying and selecting git branches.
+//! Branch panel UI component for displaying and selecting git branches and tags.
 //!
 //! This module provides the `BranchPanel` widget which displays a list of
-//! git branches with their last commit time and allows single-selection.
+//! git branches and tags with their last commit time and allows single-selection.
 
 use chrono::{DateTime, Utc};
 use gtk::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::git::BranchInfo;
+use crate::git::{BranchInfo, TagInfo};
 
-/// A panel widget that displays a list of git branches.
+/// A panel widget that displays a list of git branches and tags.
 ///
-/// The panel shows each branch with:
-/// - A checkmark icon for the currently checked-out branch
-/// - The branch name (with ellipsis for long names)
-/// - Relative time since last commit
+/// The panel shows branches and tags in separate sections:
+/// - **Branches section**: Shows each branch with a checkmark icon for the
+///   currently checked-out branch, the branch name, and relative time since last commit.
+/// - **Tags section**: Shows each tag with a tag icon and relative time.
 ///
 /// Branches are sorted with "main" first, then alphabetically using
 /// natural sort order (e.g., "branch-2" comes before "branch-10").
+/// Tags are sorted alphabetically using natural sort order.
 #[derive(Clone)]
 pub struct BranchPanel {
     /// The root widget container
     pub widget: gtk::Box,
-    /// The list box containing branch rows
+    /// The list box containing branch and tag rows
     list_box: gtk::ListBox,
-    /// Currently selected branch name
-    selected_branch: Rc<RefCell<Option<String>>>,
+    /// Currently selected ref name (branch or tag)
+    selected_ref: Rc<RefCell<Option<String>>>,
 }
 
 impl BranchPanel {
-    /// Create a new BranchPanel with the given branches.
+    /// Create a new BranchPanel with the given branches (no tags).
     ///
     /// # Arguments
     /// * `branches` - Slice of branch information to display
     pub fn new(branches: &[BranchInfo]) -> Self {
-        Self::new_with_checked_out_branch(branches, None)
+        Self::new_with_refs(branches, &[], None)
     }
 
-    /// Create a new BranchPanel with branches and indication of which is checked out.
+    /// Create a new BranchPanel with branches, tags, and indication of which branch is checked out.
     ///
     /// # Arguments
     /// * `branches` - Slice of branch information to display
+    /// * `tags` - Slice of tag information to display
     /// * `checked_out_branch` - Name of the currently checked out branch (if any)
-    pub fn new_with_checked_out_branch(
+    pub fn new_with_refs(
         branches: &[BranchInfo],
+        tags: &[TagInfo],
         checked_out_branch: Option<&str>,
     ) -> Self {
         let side_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
 
-        // Create a scrolled window for the branch list
+        // Create a scrolled window for the list
         let scrolled = gtk::ScrolledWindow::builder().vexpand(true).build();
 
-        // Create a list box to hold branches
+        // Create a list box to hold branches and tags
         let list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .build();
 
-        let sorted_branches = sort_branches(branches);
+        // Make section headers non-selectable
+        list_box.set_header_func(|row, _| {
+            if row.widget_name() == "section-header" {
+                row.set_selectable(false);
+                row.set_activatable(false);
+            }
+        });
 
-        // Add each branch to the list
-        for branch_info in &sorted_branches {
-            let row = create_branch_row(branch_info, checked_out_branch);
-            list_box.append(&row);
-        }
+        populate_list(&list_box, branches, tags, checked_out_branch);
 
         scrolled.set_child(Some(&list_box));
         side_panel.append(&scrolled);
@@ -74,68 +79,70 @@ impl BranchPanel {
         let panel = Self {
             widget: side_panel,
             list_box,
-            selected_branch: Rc::new(RefCell::new(None)),
+            selected_ref: Rc::new(RefCell::new(None)),
         };
 
-        // Default selection: prefer checked-out branch, then "main", then first row.
+        // Default selection: prefer checked-out branch, then "main", then first selectable row.
         if let Some(name) = checked_out_branch {
-            let _ = panel.select_branch(name);
+            let _ = panel.select_ref(name);
         }
         panel.ensure_default_selection();
         panel
     }
 
-    /// Update the panel with a new list of branches.
+    /// Update the panel with a new list of branches and tags.
     ///
     /// Attempts to preserve the current selection if possible.
     ///
     /// # Arguments
     /// * `branches` - New slice of branch information
+    /// * `tags` - New slice of tag information
     /// * `checked_out_branch` - Name of the currently checked out branch (if any)
-    pub fn update_branches(&self, branches: &[BranchInfo], checked_out_branch: Option<&str>) {
-        // Preserve the last selected branch (or current selected row if present).
-        let preserved = self.selected_branch.borrow().clone().or_else(|| {
+    pub fn update_refs(
+        &self,
+        branches: &[BranchInfo],
+        tags: &[TagInfo],
+        checked_out_branch: Option<&str>,
+    ) {
+        // Preserve the last selected ref (or current selected row if present).
+        let preserved = self.selected_ref.borrow().clone().or_else(|| {
             self.list_box
                 .selected_row()
-                .and_then(|r| row_branch_name(&r))
+                .and_then(|r| row_ref_name(&r))
         });
 
-        // Clear existing branches
+        // Clear existing rows
         while let Some(row) = self.list_box.row_at_index(0) {
             self.list_box.remove(&row);
         }
 
-        let sorted_branches = sort_branches(branches);
-
-        // Add new branches
-        for branch_info in &sorted_branches {
-            let row = create_branch_row(branch_info, checked_out_branch);
-            self.list_box.append(&row);
-        }
+        populate_list(&self.list_box, branches, tags, checked_out_branch);
 
         if let Some(name) = preserved {
-            let _ = self.select_branch(&name);
+            let _ = self.select_ref(&name);
         } else if let Some(name) = checked_out_branch {
-            let _ = self.select_branch(name);
+            let _ = self.select_ref(name);
         }
         self.ensure_default_selection();
     }
 
-    /// Select a branch by name.
+    /// Select a ref (branch or tag) by name.
     ///
     /// # Arguments
-    /// * `branch_name` - Name of the branch to select
+    /// * `ref_name` - Name of the branch or tag to select
     ///
     /// # Returns
-    /// `true` if the branch was found and selected, `false` otherwise.
-    pub fn select_branch(&self, branch_name: &str) -> bool {
+    /// `true` if the ref was found and selected, `false` otherwise.
+    pub fn select_ref(&self, ref_name: &str) -> bool {
         let mut i = 0;
         while let Some(row) = self.list_box.row_at_index(i) {
-            if let Some(name) = row_branch_name(&row) {
-                if name == branch_name {
-                    self.list_box.select_row(Some(&row));
-                    *self.selected_branch.borrow_mut() = Some(branch_name.to_string());
-                    return true;
+            if row.is_selectable() {
+                if let Some(name) = row_ref_name(&row) {
+                    if name == ref_name {
+                        self.list_box.select_row(Some(&row));
+                        *self.selected_ref.borrow_mut() = Some(ref_name.to_string());
+                        return true;
+                    }
                 }
             }
             i += 1;
@@ -143,37 +150,47 @@ impl BranchPanel {
         false
     }
 
-    /// Register a callback for when a branch is selected (activated).
+    /// Register a callback for when a ref (branch or tag) is selected (activated).
     ///
     /// # Arguments
-    /// * `callback` - Function called with the branch name when a branch is activated
-    pub fn branch_selected<F: Fn(&str) + 'static>(&self, callback: F) {
-        let selected_branch = self.selected_branch.clone();
+    /// * `callback` - Function called with the ref name when a branch or tag is activated
+    pub fn ref_selected<F: Fn(&str) + 'static>(&self, callback: F) {
+        let selected_ref = self.selected_ref.clone();
         self.list_box.connect_row_activated(move |_, row| {
-            if let Some(branch_name) = row_branch_name(row) {
-                *selected_branch.borrow_mut() = Some(branch_name.clone());
-                callback(&branch_name);
+            if let Some(ref_name) = row_ref_name(row) {
+                *selected_ref.borrow_mut() = Some(ref_name.clone());
+                callback(&ref_name);
             }
         });
     }
 
-    /// Ensure a default branch is selected if nothing is currently selected.
+    /// Register a callback for when a branch is selected (legacy method for compatibility).
+    pub fn branch_selected<F: Fn(&str) + 'static>(&self, callback: F) {
+        self.ref_selected(callback);
+    }
+
+    /// Ensure a default ref is selected if nothing is currently selected.
     fn ensure_default_selection(&self) {
         if self.list_box.selected_row().is_some() {
             return;
         }
 
         // Prefer main if present.
-        if self.select_branch("main") {
+        if self.select_ref("main") {
             return;
         }
 
-        // Otherwise select first row if present.
-        if let Some(row) = self.list_box.row_at_index(0) {
-            self.list_box.select_row(Some(&row));
-            if let Some(name) = row_branch_name(&row) {
-                *self.selected_branch.borrow_mut() = Some(name);
+        // Otherwise select first selectable row if present.
+        let mut i = 0;
+        while let Some(row) = self.list_box.row_at_index(i) {
+            if row.is_selectable() {
+                self.list_box.select_row(Some(&row));
+                if let Some(name) = row_ref_name(&row) {
+                    *self.selected_ref.borrow_mut() = Some(name);
+                }
+                return;
             }
+            i += 1;
         }
     }
 }
@@ -182,14 +199,67 @@ impl BranchPanel {
 // Private helper functions
 // =============================================================================
 
-/// Extract the branch name from a list box row.
-fn row_branch_name(row: &gtk::ListBoxRow) -> Option<String> {
+/// Populate the list box with branches and tags, including section headers.
+fn populate_list(
+    list_box: &gtk::ListBox,
+    branches: &[BranchInfo],
+    tags: &[TagInfo],
+    checked_out_branch: Option<&str>,
+) {
+    // Add Branches section
+    if !branches.is_empty() {
+        let header = create_section_header("Branches");
+        list_box.append(&header);
+
+        let sorted_branches = sort_branches(branches);
+        for branch_info in &sorted_branches {
+            let row = create_branch_row(branch_info, checked_out_branch);
+            list_box.append(&row);
+        }
+    }
+
+    // Add Tags section
+    if !tags.is_empty() {
+        let header = create_section_header("Tags");
+        list_box.append(&header);
+
+        let sorted_tags = sort_tags(tags);
+        for tag_info in &sorted_tags {
+            let row = create_tag_row(tag_info);
+            list_box.append(&row);
+        }
+    }
+}
+
+/// Create a section header row (non-selectable).
+fn create_section_header(title: &str) -> gtk::ListBoxRow {
+    let label = gtk::Label::builder()
+        .label(title)
+        .halign(gtk::Align::Start)
+        .margin_start(12)
+        .margin_top(12)
+        .margin_bottom(4)
+        .build();
+    label.add_css_class("heading");
+    label.add_css_class("dim-label");
+
+    let row = gtk::ListBoxRow::new();
+    row.set_widget_name("section-header");
+    row.set_child(Some(&label));
+    row.set_selectable(false);
+    row.set_activatable(false);
+    row
+}
+
+/// Extract the ref name (branch or tag) from a list box row.
+fn row_ref_name(row: &gtk::ListBoxRow) -> Option<String> {
     let child = row.child()?;
     let box_widget = child.downcast_ref::<gtk::Box>()?;
     let mut current = box_widget.first_child();
     while let Some(widget) = current {
         if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-            if label.widget_name() == "branch-name" {
+            let name = label.widget_name();
+            if name == "branch-name" || name == "tag-name" {
                 return Some(label.text().to_string());
             }
         }
@@ -207,6 +277,13 @@ fn sort_branches(branches: &[BranchInfo]) -> Vec<BranchInfo> {
         (false, true) => std::cmp::Ordering::Greater,
         (false, false) => natural_compare(&a.name, &b.name),
     });
+    sorted
+}
+
+/// Sort tags alphabetically using natural sort.
+fn sort_tags(tags: &[TagInfo]) -> Vec<TagInfo> {
+    let mut sorted = tags.to_vec();
+    sorted.sort_by(|a, b| natural_compare(&a.name, &b.name));
     sorted
 }
 
@@ -247,6 +324,53 @@ fn create_branch_row(
         .build();
 
     let time_ago = format_time_ago(branch_info.latest_commit_time);
+    let markup = format!(
+        "<span size='small'>{}</span>",
+        gtk::glib::markup_escape_text(&time_ago)
+    );
+    time_label.set_markup(&markup);
+    time_label.add_css_class("dim-label");
+
+    row_box.append(&time_label);
+    row_box.set_hexpand(true);
+
+    let row = gtk::ListBoxRow::new();
+    row.set_child(Some(&row_box));
+    row
+}
+
+/// Create a GTK row widget for a tag.
+fn create_tag_row(tag_info: &TagInfo) -> gtk::ListBoxRow {
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(6)
+        .spacing(8)
+        .build();
+
+    // Tag icon
+    let tag_icon = gtk::Image::from_icon_name("tag-symbolic");
+    tag_icon.set_pixel_size(16);
+    tag_icon.set_tooltip_text(Some("Tag"));
+    row_box.append(&tag_icon);
+
+    // Tag name label with ellipsis for long names
+    let tag_label = gtk::Label::builder().halign(gtk::Align::Start).build();
+    tag_label.set_widget_name("tag-name");
+    tag_label.set_text(&tag_info.name);
+    tag_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    tag_label.set_tooltip_text(Some(&tag_info.name));
+    row_box.append(&tag_label);
+
+    // Time ago label (lighter color, smaller font, right-aligned)
+    let time_label = gtk::Label::builder()
+        .halign(gtk::Align::End)
+        .hexpand(true)
+        .build();
+
+    let time_ago = format_time_ago(tag_info.commit_time);
     let markup = format!(
         "<span size='small'>{}</span>",
         gtk::glib::markup_escape_text(&time_ago)
