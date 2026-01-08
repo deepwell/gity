@@ -81,7 +81,11 @@ fn diff_has_any_collapsed_file(diff_files_box: &gtk::Box) -> Option<bool> {
         }
         child = next;
     }
-    if saw_any { Some(false) } else { None }
+    if saw_any {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn update_expand_toggle_button(diff_files_box: &gtk::Box, toggle_button: &gtk::Button) {
@@ -527,22 +531,66 @@ fn build_file_expander_lazy(
         .build();
     filename_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
 
+    // Use a Stack to animate between copy and success icons
     let copy_icon = gtk::Image::from_icon_name("edit-copy-symbolic");
     copy_icon.set_pixel_size(14);
 
+    let success_icon = gtk::Image::from_icon_name("object-select-symbolic");
+    success_icon.set_pixel_size(14);
+
+    let icon_stack = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .transition_duration(200)
+        .build();
+    icon_stack.add_named(&copy_icon, Some("copy"));
+    icon_stack.add_named(&success_icon, Some("success"));
+    icon_stack.set_visible_child_name("copy");
+
     let copy_button = gtk::Button::builder()
-        .child(&copy_icon)
+        .child(&icon_stack)
         .tooltip_text("Copy filename")
         .valign(gtk::Align::Center)
         .build();
     copy_button.add_css_class("flat");
+    copy_button.add_css_class("copy-filename-btn");
     copy_button.set_can_focus(false);
     copy_button.set_width_request(22);
     copy_button.set_height_request(22);
 
+    // Show copy button on hover over the entire expander width
+    let motion_controller = gtk::EventControllerMotion::new();
+    let copy_button_for_enter = copy_button.clone();
+    motion_controller.connect_enter(move |_, _, _| {
+        copy_button_for_enter.add_css_class("visible");
+    });
+    let copy_button_for_leave = copy_button.clone();
+    motion_controller.connect_leave(move |_| {
+        if !copy_button_for_leave.has_css_class("success") {
+            copy_button_for_leave.remove_css_class("visible");
+        }
+    });
+    expander.add_controller(motion_controller);
+
     let filename_for_copy = prepared.label.clone();
+    let icon_stack_for_click = icon_stack.clone();
+    let copy_button_for_click = copy_button.clone();
     copy_button.connect_clicked(move |_| {
         copy_text_to_clipboard(&filename_for_copy);
+
+        icon_stack_for_click.set_visible_child_name("success");
+        copy_button_for_click.add_css_class("success");
+
+        let stack_clone = icon_stack_for_click.clone();
+        let button_clone = copy_button_for_click.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+            button_clone.remove_css_class("success");
+            button_clone.remove_css_class("visible");
+
+            let stack_inner = stack_clone.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                stack_inner.set_visible_child_name("copy");
+            });
+        });
     });
 
     // Spacer eats remaining header width so the copy button stays immediately after the label,

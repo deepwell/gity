@@ -5,6 +5,7 @@ mod ui;
 mod window;
 
 use adw;
+use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -50,7 +51,17 @@ fn main() -> glib::ExitCode {
     }
 
     let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_startup(window::setup_shortcuts);
+    app.connect_startup(|app| {
+        let css_provider = gtk::CssProvider::new();
+        css_provider.load_from_resource("/com/markdeepwell/gity/style.css");
+        gtk::style_context_add_provider_for_display(
+            &gdk::Display::default().expect("Could not get default display"),
+            &css_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
+        window::setup_shortcuts(app);
+    });
     app.connect_activate(window::build_ui);
 
     app.run()

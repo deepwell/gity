@@ -1,0 +1,12 @@
+.copy-filename-btn {
+    opacity: 0;
+    transition: opacity 150ms ease-in-out;
+    padding: 2px;
+    min-height: 0;
+    min-width: 0;
+}
+
+.copy-filename-btn.visible,
+.copy-filename-btn.success {
+    opacity: 1;
+}
