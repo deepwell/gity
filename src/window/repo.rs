@@ -31,6 +31,7 @@ pub fn load_repo(
     *state.current_path.borrow_mut() = Some(path.clone());
 
     let checked_out_branch = git::checked_out_branch_name(&path);
+    let checked_out_tag = git::checked_out_tag_name(&path);
     let effective_branch = branch_name.unwrap_or_else(|| git::default_branch_ref(&path));
 
     // Pre-set current branch so programmatic selection doesn't trigger redundant reloads.
@@ -75,7 +76,7 @@ pub fn load_repo(
 
     ui.repo_view
         .branch_panel
-        .update_refs(&branches, &tags, checked_out_branch.as_deref());
+        .update_refs(&branches, &tags, checked_out_branch.as_deref(), checked_out_tag.as_deref());
     let _ = ui.repo_view.branch_panel.select_ref(&effective_branch);
 }
 
@@ -150,7 +151,7 @@ pub fn close_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     ui.title_label.set_text(app_name);
 
     ui.repo_view.commit_list.clear();
-    ui.repo_view.branch_panel.update_refs(&[], &[], None);
+    ui.repo_view.branch_panel.update_refs(&[], &[], None, None);
 
     // Reset search UI
     ui.repo_view.search_bar.set_search_mode(false);
@@ -187,7 +188,7 @@ pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
 
     // Clear panels while the new repo loads.
     ui.repo_view.commit_list.clear();
-    ui.repo_view.branch_panel.update_refs(&[], &[], None);
+    ui.repo_view.branch_panel.update_refs(&[], &[], None, None);
 
     // Reset search UI.
     ui.repo_view.search_bar.set_search_mode(false);

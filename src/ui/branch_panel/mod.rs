@@ -36,7 +36,7 @@ impl BranchPanel {
     /// # Arguments
     /// * `branches` - Slice of branch information to display
     pub fn new(branches: &[BranchInfo]) -> Self {
-        Self::new_with_refs(branches, &[], None)
+        Self::new_with_refs(branches, &[], None, None)
     }
 
     /// Create a new BranchPanel with branches, tags, and indication of which branch is checked out.
@@ -49,6 +49,7 @@ impl BranchPanel {
         branches: &[BranchInfo],
         tags: &[TagInfo],
         checked_out_branch: Option<&str>,
+        checked_out_tag: Option<&str>,
     ) -> Self {
         let side_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -70,7 +71,13 @@ impl BranchPanel {
             }
         });
 
-        populate_list(&list_box, branches, tags, checked_out_branch);
+        populate_list(
+            &list_box,
+            branches,
+            tags,
+            checked_out_branch,
+            checked_out_tag,
+        );
 
         scrolled.set_child(Some(&list_box));
         side_panel.append(&scrolled);
@@ -103,20 +110,27 @@ impl BranchPanel {
         branches: &[BranchInfo],
         tags: &[TagInfo],
         checked_out_branch: Option<&str>,
+        checked_out_tag: Option<&str>,
     ) {
         // Preserve the last selected ref (or current selected row if present).
-        let preserved = self.selected_ref.borrow().clone().or_else(|| {
-            self.list_box
-                .selected_row()
-                .and_then(|r| row_ref_name(&r))
-        });
+        let preserved = self
+            .selected_ref
+            .borrow()
+            .clone()
+            .or_else(|| self.list_box.selected_row().and_then(|r| row_ref_name(&r)));
 
         // Clear existing rows
         while let Some(row) = self.list_box.row_at_index(0) {
             self.list_box.remove(&row);
         }
 
-        populate_list(&self.list_box, branches, tags, checked_out_branch);
+        populate_list(
+            &self.list_box,
+            branches,
+            tags,
+            checked_out_branch,
+            checked_out_tag,
+        );
 
         if let Some(name) = preserved {
             let _ = self.select_ref(&name);
@@ -205,6 +219,7 @@ fn populate_list(
     branches: &[BranchInfo],
     tags: &[TagInfo],
     checked_out_branch: Option<&str>,
+    checked_out_tag: Option<&str>,
 ) {
     // Add Branches section
     if !branches.is_empty() {
@@ -225,7 +240,7 @@ fn populate_list(
 
         let sorted_tags = sort_tags(tags);
         for tag_info in &sorted_tags {
-            let row = create_tag_row(tag_info);
+            let row = create_tag_row(tag_info, checked_out_tag);
             list_box.append(&row);
         }
     }
@@ -340,7 +355,7 @@ fn create_branch_row(
 }
 
 /// Create a GTK row widget for a tag.
-fn create_tag_row(tag_info: &TagInfo) -> gtk::ListBoxRow {
+fn create_tag_row(tag_info: &TagInfo, checked_out_tag: Option<&str>) -> gtk::ListBoxRow {
     let row_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .margin_start(12)
@@ -350,11 +365,13 @@ fn create_tag_row(tag_info: &TagInfo) -> gtk::ListBoxRow {
         .spacing(8)
         .build();
 
-    // Tag icon
-    let tag_icon = gtk::Image::from_icon_name("tag-symbolic");
-    tag_icon.set_pixel_size(16);
-    tag_icon.set_tooltip_text(Some("Tag"));
-    row_box.append(&tag_icon);
+    // Checked-out tag indicator (keeps its space; opacity toggled).
+    let is_checked_out = checked_out_tag.is_some_and(|t| t == tag_info.name);
+    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
+    check_icon.set_pixel_size(16);
+    check_icon.set_opacity(if is_checked_out { 1.0 } else { 0.0 });
+    check_icon.set_tooltip_text(Some("Checked out tag"));
+    row_box.append(&check_icon);
 
     // Tag name label with ellipsis for long names
     let tag_label = gtk::Label::builder().halign(gtk::Align::Start).build();

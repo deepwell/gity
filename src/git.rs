@@ -5,8 +5,8 @@ use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Determines which ref the UI should open by default for the repository at `path`.
 ///
@@ -503,4 +503,29 @@ pub fn checked_out_branch_name(path: &Path) -> Option<String> {
         return None;
     }
     head.shorthand().map(|s| s.to_string())
+}
+
+/// Returns the currently checked-out tag name for the repository at `path`.
+/// If HEAD is detached (or can't be read), returns `None`.
+pub fn checked_out_tag_name(path: &Path) -> Option<String> {
+    let repo = Repository::open(path).ok()?;
+    let head = repo.head().ok()?;
+
+    // Get the commit that HEAD points to
+    let head_commit = head.peel_to_commit().ok()?;
+    let head_oid = head_commit.id();
+
+    // Look through all tags to find one pointing to this commit
+    let tags = repo.tag_names(None).ok()?;
+    for tag_name in tags.iter().flatten() {
+        if let Ok(tag_ref) = repo.find_reference(&format!("refs/tags/{}", tag_name)) {
+            if let Ok(tag_commit) = tag_ref.peel_to_commit() {
+                if tag_commit.id() == head_oid {
+                    return Some(tag_name.to_string());
+                }
+            }
+        }
+    }
+
+    None
 }
