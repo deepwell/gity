@@ -81,11 +81,7 @@ fn diff_has_any_collapsed_file(diff_files_box: &gtk::Box) -> Option<bool> {
         }
         child = next;
     }
-    if saw_any {
-        Some(false)
-    } else {
-        None
-    }
+    if saw_any { Some(false) } else { None }
 }
 
 fn update_expand_toggle_button(diff_files_box: &gtk::Box, toggle_button: &gtk::Button) {

@@ -261,8 +261,7 @@ impl SearchHandler {
 
         // Full-text search fallback (full commit message, case-insensitive).
         let started_at = std::time::Instant::now();
-        let matches =
-            find_text_matches_parallel(path, oids, query, &query_lower, cancel.as_ref())?;
+        let matches = find_text_matches_parallel(path, oids, query, &query_lower, cancel.as_ref())?;
         Logger::info(&format!(
             "Text search completed: \"{}\" - {} matches - {}ms",
             query,
@@ -458,7 +457,9 @@ impl SearchHandler {
         let matching_indices = if had_cached {
             matching_indices
         } else {
-            let indices = self.find_matching_indices_in_repo(path, branch_ref, &query).ok()?;
+            let indices = self
+                .find_matching_indices_in_repo(path, branch_ref, &query)
+                .ok()?;
             if indices.is_empty() {
                 return None;
             }
@@ -498,7 +499,9 @@ impl SearchHandler {
         let matching_indices = if had_cached {
             matching_indices
         } else {
-            let indices = self.find_matching_indices_in_repo(path, branch_ref, &query).ok()?;
+            let indices = self
+                .find_matching_indices_in_repo(path, branch_ref, &query)
+                .ok()?;
             if indices.is_empty() {
                 return None;
             }
@@ -615,7 +618,13 @@ fn find_text_matches_parallel(
     let workers = available.max(1).min(max_workers.max(1));
 
     let needle_lower_ascii: Option<Vec<u8>> = if query.is_ascii() {
-        Some(query.as_bytes().iter().map(|b| b.to_ascii_lowercase()).collect())
+        Some(
+            query
+                .as_bytes()
+                .iter()
+                .map(|b| b.to_ascii_lowercase())
+                .collect(),
+        )
     } else {
         None
     };

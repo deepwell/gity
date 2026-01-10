@@ -1,6 +1,6 @@
+use adw::prelude::AdwDialogExt;
 use gio::ActionEntry;
 use gtk::{gio, glib, prelude::*};
-use adw::prelude::AdwDialogExt;
 
 use super::repo;
 use super::search;
