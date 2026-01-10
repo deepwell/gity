@@ -121,7 +121,8 @@ impl WindowUi {
     }
 
     /// Set a callback for when a recent repository card is clicked.
-    pub fn on_recent_repo_clicked<F: Fn(PathBuf) + 'static>(&self, callback: F) {
+    /// The callback receives (sandbox_path, real_path).
+    pub fn on_recent_repo_clicked<F: Fn(PathBuf, PathBuf) + 'static>(&self, callback: F) {
         self.welcome_view.on_repo_clicked(callback);
     }
 

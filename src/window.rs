@@ -69,7 +69,7 @@ pub fn build_ui(application: &adw::Application) {
     // Wire recent repository click handler
     let ui_for_recent = ui.clone();
     let state_for_recent = app_state.clone();
-    ui.on_recent_repo_clicked(move |path| {
+    ui.on_recent_repo_clicked(move |sandbox_path, real_path| {
         use std::time::Instant;
 
         // If a repository is already open, reset UI state first
@@ -84,12 +84,18 @@ pub fn build_ui(application: &adw::Application) {
             .borrow_mut()
             .pending_first_page_log = Some((
             started_at,
-            path.clone(),
+            sandbox_path.clone(),
             "Open repo load -> rendered on screen".to_string(),
         ));
 
-        recent_repos::add_recent_repo(&path);
-        repo::load_repo(&ui_for_recent, &state_for_recent, APP_NAME, path, None);
+        recent_repos::add_recent_repo(&sandbox_path, &real_path);
+        repo::load_repo(
+            &ui_for_recent,
+            &state_for_recent,
+            APP_NAME,
+            sandbox_path,
+            None,
+        );
         ui_for_recent.set_repo_controls_visible(true);
         ui_for_recent.show_main();
     });

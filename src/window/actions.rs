@@ -39,6 +39,7 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
     let state_for_open_action = state.clone();
     let action_open = ActionEntry::builder("open")
         .activate(move |window: &gtk::ApplicationWindow, _, _| {
+            crate::logger::Logger::info("DEBUG: Open repository action triggered");
             repo::open_repo_dialog(
                 window,
                 &ui_for_open_action,

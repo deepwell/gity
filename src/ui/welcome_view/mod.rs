@@ -12,7 +12,8 @@ use std::rc::Rc;
 use crate::window::recent_repos::{self, RecentRepo};
 
 /// Callback type for when a recent repository is clicked
-pub type RepoClickedCallback = Rc<RefCell<Option<Box<dyn Fn(PathBuf)>>>>;
+/// Receives (sandbox_path, real_path)
+pub type RepoClickedCallback = Rc<RefCell<Option<Box<dyn Fn(PathBuf, PathBuf)>>>>;
 /// Callback type for when a recent repository is removed (to trigger refresh)
 pub type RepoRemovedCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
@@ -98,7 +99,8 @@ impl WelcomeView {
     }
 
     /// Set the callback invoked when a recent repository card is clicked.
-    pub fn on_repo_clicked<F: Fn(PathBuf) + 'static>(&self, callback: F) {
+    /// The callback receives (sandbox_path, real_path).
+    pub fn on_repo_clicked<F: Fn(PathBuf, PathBuf) + 'static>(&self, callback: F) {
         *self.repo_clicked_callback.borrow_mut() = Some(Box::new(callback));
     }
 
@@ -147,14 +149,29 @@ impl WelcomeView {
             .build();
 
         // Handle Enter key activation on FlowBox children
+        // Note: For FlowBox activation, we'll need to store both paths in the widget name
+        // For now, we'll use a JSON format: {"sandbox":"...","real":"..."}
         let callback_for_activate = self.repo_clicked_callback.clone();
         flow_box.connect_child_activated(move |_, child| {
             let name = child.child().map(|c| c.widget_name());
             if let Some(name) = name {
                 if !name.is_empty() {
+                    // Try to parse as JSON first (new format)
+                    if let Ok(paths) = serde_json::from_str::<serde_json::Value>(&name) {
+                        if let (Some(sandbox), Some(real)) = (
+                            paths.get("sandbox").and_then(|v| v.as_str()),
+                            paths.get("real").and_then(|v| v.as_str()),
+                        ) {
+                            if let Some(ref cb) = *callback_for_activate.borrow() {
+                                cb(PathBuf::from(sandbox), PathBuf::from(real));
+                            }
+                            return;
+                        }
+                    }
+                    // Fallback: treat as single path (old format or non-sandbox)
                     let path = PathBuf::from(name.as_str());
                     if let Some(ref cb) = *callback_for_activate.borrow() {
-                        cb(path);
+                        cb(path.clone(), path);
                     }
                 }
             }
@@ -163,17 +180,22 @@ impl WelcomeView {
         for repo in recent_repos {
             let card = Self::build_repo_card(&repo);
 
-            // Store path in widget name for FlowBox activation handler
-            card.set_widget_name(&repo.path.to_string_lossy());
+            // Store both paths in widget name as JSON for FlowBox activation handler
+            let paths_json = serde_json::json!({
+                "sandbox": repo.path.to_string_lossy(),
+                "real": repo.real_path.to_string_lossy()
+            });
+            card.set_widget_name(&paths_json.to_string());
 
             // Set up left-click handler to open repo
-            let path = repo.path.clone();
+            let sandbox_path = repo.path.clone();
+            let real_path = repo.real_path.clone();
             let callback = self.repo_clicked_callback.clone();
             let gesture = gtk::GestureClick::new();
             gesture.set_button(1);
             gesture.connect_pressed(move |_, _, _, _| {
                 if let Some(ref cb) = *callback.borrow() {
-                    cb(path.clone());
+                    cb(sandbox_path.clone(), real_path.clone());
                 }
             });
             card.add_controller(gesture);

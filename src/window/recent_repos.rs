@@ -1,15 +1,27 @@
 use gtk::gio;
-use gtk::prelude::SettingsExtManual;
+use gtk::prelude::SettingsExt;
 use std::path::PathBuf;
 
 use crate::APP_ID;
 use crate::git;
 
+use serde::{Deserialize, Serialize};
+
 const MAX_RECENT_REPOS: usize = 12;
+
+/// Stored repository entry with both real and sandbox paths
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecentRepoEntry {
+    real_path: String,
+    sandbox_path: String,
+}
 
 /// Information about a recent repository for display
 pub struct RecentRepo {
+    /// The sandbox path (used for actual operations)
     pub path: PathBuf,
+    /// The real path (used for display)
+    pub real_path: PathBuf,
     pub folder_name: String,
     pub display_path: String,
 }
@@ -29,26 +41,28 @@ fn format_display_path(path: &PathBuf) -> String {
 /// Load recent repositories from GSettings
 pub fn load_recent_repos() -> Vec<RecentRepo> {
     let settings = gio::Settings::new(APP_ID);
-    let paths: Vec<String> = settings
-        .strv("recent-repositories")
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let json_str = settings.string("recent-repositories");
 
-    paths
+    let entries: Vec<RecentRepoEntry> =
+        serde_json::from_str(&json_str).unwrap_or_else(|_| Vec::new());
+
+    entries
         .into_iter()
-        .filter_map(|path_str| {
-            let path = PathBuf::from(&path_str);
-            // Only include repos that still exist and are valid
-            if path.exists() && git::validate_repository(&path).is_ok() {
-                let folder_name = path
+        .filter_map(|entry| {
+            let sandbox_path = PathBuf::from(&entry.sandbox_path);
+            let real_path = PathBuf::from(&entry.real_path);
+
+            // Only include repos that still exist and are valid (check sandbox path for access)
+            if sandbox_path.exists() && git::validate_repository(&sandbox_path).is_ok() {
+                let folder_name = real_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or(&path_str)
+                    .unwrap_or(&entry.real_path)
                     .to_string();
-                let display_path = format_display_path(&path);
+                let display_path = format_display_path(&real_path);
                 Some(RecentRepo {
-                    path,
+                    path: sandbox_path,
+                    real_path,
                     folder_name,
                     display_path,
                 })
@@ -60,49 +74,60 @@ pub fn load_recent_repos() -> Vec<RecentRepo> {
         .collect()
 }
 
-/// Normalize a path string by removing trailing slashes
-fn normalize_path(path_str: &str) -> String {
-    path_str.trim_end_matches('/').to_string()
-}
-
 /// Add a repository path to the recent list (at the front)
-pub fn add_recent_repo(path: &PathBuf) {
+///
+/// # Arguments
+/// * `sandbox_path` - The path accessible in the sandbox (used for operations)
+/// * `real_path` - The real path (used for display)
+pub fn add_recent_repo(sandbox_path: &PathBuf, real_path: &PathBuf) {
     let settings = gio::Settings::new(APP_ID);
-    let path_str = normalize_path(&path.to_string_lossy());
+    let json_str = settings.string("recent-repositories");
 
-    // Get current list, normalize paths, and remove this path if it exists (to move it to front)
-    let mut paths: Vec<String> = settings
-        .strv("recent-repositories")
-        .iter()
-        .map(|s| normalize_path(&s))
-        .filter(|p| p != &path_str)
-        .collect();
+    let mut entries: Vec<RecentRepoEntry> =
+        serde_json::from_str(&json_str).unwrap_or_else(|_| Vec::new());
+
+    let sandbox_str = sandbox_path.to_string_lossy().to_string();
+    let real_str = real_path.to_string_lossy().to_string();
+
+    // Remove this entry if it exists (to move it to front)
+    entries.retain(|e| e.sandbox_path != sandbox_str);
 
     // Add to front
-    paths.insert(0, path_str);
+    entries.insert(
+        0,
+        RecentRepoEntry {
+            real_path: real_str,
+            sandbox_path: sandbox_str,
+        },
+    );
 
     // Limit to max
-    paths.truncate(MAX_RECENT_REPOS);
+    entries.truncate(MAX_RECENT_REPOS);
 
     // Save
-    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    let _ = settings.set_strv("recent-repositories", path_refs);
+    if let Ok(json) = serde_json::to_string(&entries) {
+        let _ = settings.set_string("recent-repositories", &json);
+    }
 }
 
 /// Remove a repository path from the recent list
+///
+/// # Arguments
+/// * `path` - The sandbox path to remove (matches against sandbox_path in entries)
 pub fn remove_recent_repo(path: &PathBuf) {
     let settings = gio::Settings::new(APP_ID);
-    let path_str = normalize_path(&path.to_string_lossy());
+    let json_str = settings.string("recent-repositories");
 
-    // Get current list and filter out the path to remove
-    let paths: Vec<String> = settings
-        .strv("recent-repositories")
-        .iter()
-        .map(|s| normalize_path(&s))
-        .filter(|p| p != &path_str)
-        .collect();
+    let mut entries: Vec<RecentRepoEntry> =
+        serde_json::from_str(&json_str).unwrap_or_else(|_| Vec::new());
+
+    let path_str = path.to_string_lossy().to_string();
+
+    // Filter out the path to remove
+    entries.retain(|e| e.sandbox_path != path_str);
 
     // Save
-    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    let _ = settings.set_strv("recent-repositories", path_refs);
+    if let Ok(json) = serde_json::to_string(&entries) {
+        let _ = settings.set_string("recent-repositories", &json);
+    }
 }

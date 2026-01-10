@@ -2,6 +2,18 @@
 pub struct Logger;
 
 impl Logger {
+    /// Log a debug  message (only prints in debug builds)
+    #[cfg(debug_assertions)]
+    pub fn debug(message: &str) {
+        println!("[DEBUG] {}", message);
+    }
+
+    /// Log a debug message (no-op in release builds)
+    #[cfg(not(debug_assertions))]
+    pub fn debug(_message: &str) {
+        // No-op in release builds
+    }
+
     /// Log an info message (only prints in debug builds)
     #[cfg(debug_assertions)]
     pub fn info(message: &str) {

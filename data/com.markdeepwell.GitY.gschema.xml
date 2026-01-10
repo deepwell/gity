@@ -26,10 +26,10 @@
       <summary>Branch panel width</summary>
       <description>The width of the branch panel</description>
     </key>
-    <key name="recent-repositories" type="as">
-      <default>[]</default>
+    <key name="recent-repositories" type="s">
+      <default>"[]"</default>
       <summary>Recent repositories</summary>
-      <description>List of recently opened Git repository paths</description>
+      <description>JSON array of recent repository entries with real_path and sandbox_path</description>
     </key>
   </schema>
 </schemalist>
