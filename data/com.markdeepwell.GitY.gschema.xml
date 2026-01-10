@@ -2,7 +2,7 @@
 <schemalist>
   <schema id="com.markdeepwell.GitY" path="/com/markdeepwell/gity/">
     <key name="window-width" type="i">
-      <default>700</default>
+      <default>1400</default>
       <summary>Window width</summary>
       <description>The width of the application window</description>
     </key>
