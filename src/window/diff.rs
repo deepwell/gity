@@ -313,7 +313,12 @@ fn build_diff_gutter_and_text(diff_text: &str) -> (String, String, Vec<DiffLineK
             if let Some(v) = &mut new_line {
                 *v += 1;
             }
-            rest.to_string()
+            // For empty added lines, add a space to ensure background colour is rendered
+            if rest.is_empty() {
+                " ".to_string()
+            } else {
+                rest.to_string()
+            }
         } else if let Some(rest) = line.strip_prefix('-') {
             kind = DiffLineKind::Remove;
             sym = '-';
@@ -321,7 +326,12 @@ fn build_diff_gutter_and_text(diff_text: &str) -> (String, String, Vec<DiffLineK
             if let Some(v) = &mut old_line {
                 *v += 1;
             }
-            rest.to_string()
+            // For empty removed lines, add a space to ensure background colour is rendered
+            if rest.is_empty() {
+                " ".to_string()
+            } else {
+                rest.to_string()
+            }
         } else if let Some(rest) = line.strip_prefix(' ') {
             kind = DiffLineKind::Context;
             sym = ' ';
@@ -404,6 +414,7 @@ fn apply_diff_line_tags_by_kind(buffer: &gtk::TextBuffer, kinds: &[DiffLineKind]
         };
         let mut line_end = line_start.clone();
         line_end.forward_to_line_end();
+
         match kind {
             DiffLineKind::Add => {
                 if let Some(tag) = &add_tag {
