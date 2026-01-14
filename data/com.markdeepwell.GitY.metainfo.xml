@@ -8,7 +8,6 @@
     <p>
       A simple and fast Git repository browser to view Git branches and commit diffs.
     </p>
-    <p>Features:</p>
     <ul>
       <li>View all branches and commits for local Git repositories</li>
       <li>Search by commit message or Git SHA</li>
@@ -16,6 +15,9 @@
       <li>Remembers recently opened Git repositories</li>
     </ul>
   </description>
+  <developer id="com.markdeepwell">
+    <name>Mark Deepwell</name>
+  </developer>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
@@ -31,12 +33,24 @@
   <url type="vcs-browser">https://github.com/deepwell/gity</url>
 
   <launchable type="desktop-id">com.markdeepwell.GitY.desktop</launchable>
+
   <screenshots>
     <screenshot type="default">
       <image>https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/repository-screen.png</image>
+      <caption>Browse and search Git commit history</caption>
     </screenshot>
     <screenshot>
       <image>https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/welcome-screen.png</image>
+      <caption>Initial screen showing recently opened repositories</caption>
     </screenshot>
   </screenshots>
+
+  <releases>
+    <release version="0.4.0" date="2026-01-12">
+      <description>
+        <p>Initial Flatpak release</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
 </component>
