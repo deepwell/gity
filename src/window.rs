@@ -66,6 +66,19 @@ pub fn build_ui(application: &adw::Application) {
     // Wire actions + button handlers.
     actions::install(&window, &ui, &app_state);
 
+    // Hook up mouse back button to go to welcome screen
+    let window_for_back_button = window.clone();
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(8); // Mouse back button
+    gesture.connect_pressed(move |_, _, _, _| {
+        let _ = gtk::prelude::WidgetExt::activate_action(
+            &window_for_back_button,
+            "win.close-repo",
+            None,
+        );
+    });
+    ui.stack.add_controller(gesture);
+
     // Wire recent repository click handler
     let ui_for_recent = ui.clone();
     let state_for_recent = app_state.clone();
