@@ -383,6 +383,7 @@ fn start_commit_paging(
 ) {
     // Clear existing items + cancel any in-flight worker.
     store.remove_all();
+    selection_model.set_selected(gtk::INVALID_LIST_POSITION);
     {
         let mut st = paging_state.borrow_mut();
         if let Some(tx) = st.request_tx.take() {

@@ -291,6 +291,17 @@ pub fn refresh_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     let path_opt = state.current_path.borrow().clone();
     let branch_opt = state.current_branch.borrow().clone();
     if let Some(path) = path_opt {
+        // Clear diff UI before refreshing to avoid showing stale data
+        // from the old commit list (especially important after commit amend)
+        while let Some(child) = ui.repo_view.diff_files_box.first_child() {
+            ui.repo_view.diff_files_box.remove(&child);
+        }
+        ui.repo_view.diff_label.set_text("Commit Diff");
+        ui.repo_view.commit_message_label.set_text("");
+        ui.repo_view.expand_label.set_visible(false);
+        *ui.repo_view.full_message.borrow_mut() = String::new();
+        *ui.repo_view.is_expanded.borrow_mut() = false;
+
         let started_at = Instant::now();
         ui.repo_view
             .commit_paging_state
