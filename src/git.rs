@@ -448,6 +448,13 @@ pub fn discover_repository_root(path: &Path) -> Option<PathBuf> {
     }
 }
 
+pub fn branch_exists(path: &Path, branch_name: &str) -> bool {
+    let Ok(repo) = Repository::open(path) else {
+        return false;
+    };
+    repo.revparse_single(branch_name).is_ok()
+}
+
 /// Returns the currently checked-out branch name for the repository at `path`.
 /// If HEAD is detached (or can't be read), returns `None`.
 pub fn checked_out_branch_name(path: &Path) -> Option<String> {

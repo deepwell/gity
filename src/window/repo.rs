@@ -32,7 +32,22 @@ pub fn load_repo(
     *state.current_path.borrow_mut() = Some(path.clone());
 
     let checked_out_branch = git::checked_out_branch_name(&path);
-    let effective_branch = branch_name.unwrap_or_else(|| git::default_branch_ref(&path));
+    let mut effective_branch = branch_name.unwrap_or_else(|| git::default_branch_ref(&path));
+
+    // If the requested branch doesn't exist (e.g., was deleted), fall back to "main"
+    if !git::branch_exists(&path, &effective_branch) {
+        let default_branch = git::default_branch_ref(&path);
+        if git::branch_exists(&path, &default_branch) {
+            effective_branch = default_branch;
+            Logger::info(&format!(
+                "Branch not found, falling back to default branch: {}",
+                effective_branch
+            ));
+        } else {
+            effective_branch = "HEAD".to_string();
+            Logger::error("No valid branch found, using HEAD");
+        }
+    }
 
     // Pre-set current branch so programmatic selection doesn't trigger redundant reloads.
     *state.current_branch.borrow_mut() = Some(effective_branch.clone());
