@@ -29,6 +29,12 @@ pub fn load_repo(
     path: PathBuf,
     branch_name: Option<String>,
 ) {
+    if let Err(e) = git::validate_repository(&path) {
+        Logger::error(&format!("Failed to open repository: {}", e));
+        close_repo(ui, state, app_name);
+        return;
+    }
+
     *state.current_path.borrow_mut() = Some(path.clone());
 
     let checked_out_branch = git::checked_out_branch_name(&path);
