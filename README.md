@@ -6,6 +6,11 @@ View branches, commit diffs, and search through all commit messages.
 ![Screenshot of the welcome screen](data/screenshots/welcome-screen.png)
 ![Screenshot of the main repository screen](data/screenshots/repository-screen.png)
 
+## Flatpak
+<a href="https://flathub.org/apps/details/com.markdeepwell.GitY">
+  <img src="https://flathub.org/api/badge?svg&locale=en&light" />
+</a>
+
 ## Development Setup
 ```bash
 sudo dnf install -y gcc rust rustfmt rust-analyzer cargo gtk4-devel openssl-devel libadwaita-devel meson ninja-build gtksourceview5-devel
