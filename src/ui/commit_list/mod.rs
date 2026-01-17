@@ -1,7 +1,7 @@
 //! Commit list UI component for displaying git commits with infinite scroll.
 //!
 //! This module provides the `CommitList` widget which displays a paginated,
-//! scrollable list of git commits with columns for summary, author, SHA, and date.
+//! scrollable list of git commits with columns for message, author, SHA, and date.
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -52,7 +52,7 @@ pub struct CommitPagingState {
 /// A scrollable list widget displaying git commits with infinite scroll support.
 ///
 /// The widget displays commits in a column view with:
-/// - Summary (commit message first line)
+/// - Commit message
 /// - Author name
 /// - SHA (abbreviated)
 /// - Date
@@ -81,12 +81,12 @@ impl CommitList {
         let column_view = gtk::ColumnView::new(Some(selection_model.clone()));
 
         // Create column factories
-        let summary_column = create_column("Summary", 600, true, |c: &GitCommit| c.summary.clone());
+        let message_column = create_column("Message", 600, true, |c: &GitCommit| c.message.clone());
         let author_column = create_column("Author", 150, false, |c: &GitCommit| c.author.clone());
         let sha_column = create_column("SHA", 120, false, |c: &GitCommit| c.id.clone());
         let date_column = create_column("Date", 200, false, |c: &GitCommit| c.date.clone());
 
-        column_view.append_column(&summary_column);
+        column_view.append_column(&message_column);
         column_view.append_column(&author_column);
         column_view.append_column(&sha_column);
         column_view.append_column(&date_column);
@@ -295,7 +295,7 @@ fn poll_commit_pages(
                 for commit in commits {
                     store.append(&glib::BoxedAnyObject::new(GitCommit {
                         id: commit.id,
-                        summary: commit.summary,
+                        message: commit.message,
                         author: commit.author,
                         date: commit.date,
                     }));

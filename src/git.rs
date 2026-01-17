@@ -45,7 +45,7 @@ pub fn default_branch_ref(path: &Path) -> String {
 pub struct GitCommit {
     pub id: String,
     pub author: String,
-    pub summary: String, // todo rename to message?
+    pub message: String,
     pub date: String,
 }
 
@@ -53,7 +53,7 @@ impl fmt::Debug for GitCommit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GitCommit")
             .field("id", &self.id)
-            .field("summary", &self.summary)
+            .field("message", &self.message)
             .field("author", &self.author)
             .field("date", &self.date)
             .finish()
@@ -232,7 +232,7 @@ impl<'repo> CommitWalker<'repo> {
 
     fn to_git_commit(commit: &Commit) -> GitCommit {
         GitCommit {
-            summary: String::from_utf8_lossy(commit.message_bytes()).to_string(),
+            message: String::from_utf8_lossy(commit.message_bytes()).to_string(),
             author: commit.author().name().unwrap_or("").to_string(),
             date: format_datetime(&commit.author().when()),
             id: commit.id().to_string(),
