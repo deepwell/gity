@@ -50,6 +50,7 @@ impl BranchPanel {
         let side_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
+        side_panel.set_width_request(150);
 
         // Create a scrolled window for the branch list
         let scrolled = gtk::ScrolledWindow::builder().vexpand(true).build();
