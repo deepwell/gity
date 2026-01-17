@@ -53,4 +53,11 @@
     </release>
   </releases>
   <content_rating type="oars-1.1" />
+
+  <keywords>
+    <keyword translate="no">GTK</keyword>
+    <keyword translate="no">Git</keyword>
+    <keyword translate="no">SCM</keyword>
+    <keyword translate="no">libadwaita</keyword>
+  </keywords>
 </component>
