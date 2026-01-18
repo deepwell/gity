@@ -46,12 +46,25 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.2" date="2026-01-17">
+      <description>
+        <ul>
+          <li>Fix crash when refreshing on changed commit</li>
+          <li>Go back to welcome screen if the repository cannot be opened</li>
+          <li>Mouse back button navigates back to the welcome screen</li>
+          <li>Improve window resizing: remove hard coded minimum width and grow commit list independent of branch panel</li>
+          <li>Add a hard minimum width to the left branch panel</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="0.4.1" date="2026-01-13">
       <description>
         <p>Initial Flatpak release</p>
       </description>
     </release>
   </releases>
+
   <content_rating type="oars-1.1" />
 
   <keywords>
