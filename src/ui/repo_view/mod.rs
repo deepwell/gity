@@ -243,16 +243,16 @@ impl RepoView {
         main_content_paned.set_end_child(Some(&diff_box));
         main_content_paned.set_resize_start_child(true);
         main_content_paned.set_resize_end_child(true);
-        main_content_paned.set_shrink_start_child(false);
-        main_content_paned.set_shrink_end_child(false);
+        main_content_paned.set_shrink_start_child(true);
+        main_content_paned.set_shrink_end_child(true);
 
         let horizontal_paned = gtk::Paned::new(gtk::Orientation::Horizontal);
         horizontal_paned.set_start_child(Some(&side_panel));
         horizontal_paned.set_end_child(Some(&main_content_paned));
-        horizontal_paned.set_resize_start_child(true);
+        horizontal_paned.set_resize_start_child(false);
         horizontal_paned.set_resize_end_child(true);
-        horizontal_paned.set_shrink_start_child(false);
-        horizontal_paned.set_shrink_end_child(false);
+        horizontal_paned.set_shrink_start_child(true);
+        horizontal_paned.set_shrink_end_child(true);
 
         // Main view: search bar + paned layout
         let widget = gtk::Box::builder()
