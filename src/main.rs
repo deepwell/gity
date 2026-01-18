@@ -50,6 +50,17 @@ fn main() -> glib::ExitCode {
         }
     }
 
+    // Parse command-line arguments for repository path
+    let repo_arg: Option<std::path::PathBuf> = std::env::args_os().skip(1).find_map(|a| {
+        // Ignore flags; treat the first non-flag arg as a path
+        let s = a.to_string_lossy();
+        if s.starts_with('-') {
+            None
+        } else {
+            Some(std::path::PathBuf::from(a))
+        }
+    });
+
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|app| {
         let css_provider = gtk::CssProvider::new();
@@ -61,8 +72,15 @@ fn main() -> glib::ExitCode {
         );
 
         window::setup_shortcuts(app);
+        window::setup_app_action(app);
     });
-    app.connect_activate(window::build_ui);
+
+    let repo_arg_for_activate = repo_arg.clone();
+    app.connect_activate(move |app| {
+        // Only load from command-line args on the first window (initial launch)
+        let is_first_window = app.windows().is_empty();
+        window::build_ui(app, if is_first_window { repo_arg_for_activate.as_ref() } else { None });
+    });
 
     app.run()
 }

@@ -11,6 +11,12 @@
             <property name="title" translatable="yes" context="shortcut window">General</property>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title" translatable="yes" context="shortcut window">New Window</property>
+                <property name="accelerator">&lt;Ctrl&gt;N</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title" translatable="yes" context="shortcut window">Open Repository</property>
                 <property name="accelerator">&lt;Ctrl&gt;O</property>
               </object>

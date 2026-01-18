@@ -9,14 +9,14 @@ mod search;
 mod state;
 mod ui;
 
-pub use actions::setup_shortcuts;
+pub use actions::{setup_app_action, setup_shortcuts};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const APP_NAME: &str = "GitY";
 
-pub fn build_ui(application: &adw::Application) {
+fn setup_window(application: &adw::Application) -> (gtk::ApplicationWindow, ui::WindowUi, state::AppState) {
     // Load GSettings
     let settings = gio::Settings::new(APP_ID);
 
@@ -39,7 +39,14 @@ pub fn build_ui(application: &adw::Application) {
     // Build UI widgets (layout + stack views). Persistence wiring stays in this file.
     let ui = ui::WindowUi::build(window.clone(), APP_NAME);
     let app_state = state::AppState::new();
+    (window, ui, app_state)
+}
 
+fn wire_window(
+    window: &gtk::ApplicationWindow,
+    ui: &ui::WindowUi,
+    app_state: &state::AppState,
+) {
     // Branch selection reload (not an action).
     let current_path_for_branch = app_state.current_path.clone();
     let ui_for_branch_select = ui.clone();
@@ -129,6 +136,7 @@ pub fn build_ui(application: &adw::Application) {
     let main_content_paned = ui.repo_view.main_content_paned.clone();
 
     // Restore paned position from GSettings
+    let settings = gio::Settings::new(APP_ID);
     let paned_position = settings.int("diff-paned-position");
     main_content_paned.set_position(paned_position);
 
@@ -156,6 +164,7 @@ pub fn build_ui(application: &adw::Application) {
     // Save window state to GSettings when window is resized
     // Use an atomic bool to track if we're currently restoring to avoid saving during restore
     let restoring = Arc::new(AtomicBool::new(true));
+    let settings_for_save = settings.clone();
 
     // Helper to save window state
     let save_state =
@@ -171,7 +180,7 @@ pub fn build_ui(application: &adw::Application) {
         };
 
     // Save state when window is closed
-    let settings_close = settings.clone();
+    let settings_close = settings_for_save.clone();
     let restoring_close = restoring.clone();
     window.connect_close_request(move |win| {
         save_state(win, &settings_close, &restoring_close);
@@ -179,7 +188,7 @@ pub fn build_ui(application: &adw::Application) {
     });
 
     // Save state periodically using a recurring timeout (every 500ms)
-    let settings_timeout = settings.clone();
+    let settings_timeout = settings_for_save.clone();
     let window_timeout = window.clone();
     let restoring_timeout = restoring.clone();
     glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
@@ -188,7 +197,7 @@ pub fn build_ui(application: &adw::Application) {
     });
 
     // Save maximized state immediately when it changes
-    let settings_max = settings.clone();
+    let settings_max = settings_for_save.clone();
     let restoring_max = restoring.clone();
     window.connect_maximized_notify(move |win| {
         if !restoring_max.load(Ordering::Relaxed) {
@@ -201,10 +210,54 @@ pub fn build_ui(application: &adw::Application) {
     window.connect_realize(move |_| {
         restoring_realize.store(false, Ordering::Relaxed);
     });
+}
 
-    // Decide initial screen / optional CLI repo load.
-    // If validation fails, we still present the window (to show the error + welcome UI).
-    let _loaded = repo::maybe_load_repo_from_args(&window, &ui, &app_state, APP_NAME);
+pub fn build_ui(application: &adw::Application, repo_path_from_args: Option<&std::path::PathBuf>) {
+    let (window, ui, app_state) = setup_window(application);
+    wire_window(&window, &ui, &app_state);
+
+    // If a repo path was provided via command-line args, load it
+    if let Some(path) = repo_path_from_args {
+        if path.exists() {
+            use std::time::Instant;
+            if let Err(e) = crate::git::validate_repository(path) {
+                repo::show_repo_error(&window, path, &e.to_string());
+                ui.set_repo_controls_visible(false);
+                ui.show_welcome();
+            } else {
+                let started_at = Instant::now();
+                ui.repo_view
+                    .commit_paging_state
+                    .borrow_mut()
+                    .pending_first_page_log = Some((
+                    started_at,
+                    path.clone(),
+                    "Open repo from CLI arg -> rendered on screen".to_string(),
+                ));
+
+                recent_repos::add_recent_repo(path, path);
+                ui.set_repo_controls_visible(true);
+                ui.show_main();
+                repo::load_repo(&ui, &app_state, APP_NAME, path.clone(), None);
+            }
+            window.present();
+            return;
+        }
+    }
+
+    // Auto-open repo from CWD if applicable (only for initial launch, not new windows)
+    let _loaded = repo::maybe_load_repo_from_cwd(&window, &ui, &app_state, APP_NAME);
+
+    window.present();
+}
+
+pub fn build_ui_for_new_window(application: &adw::Application) {
+    let (window, ui, app_state) = setup_window(application);
+    wire_window(&window, &ui, &app_state);
+
+    // New windows always start on welcome screen (skip CWD auto-open)
+    ui.set_repo_controls_visible(false);
+    ui.show_welcome();
 
     window.present();
 }

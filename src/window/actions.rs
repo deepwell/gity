@@ -7,6 +7,7 @@ use super::search;
 use super::state::AppState;
 use super::ui::WindowUi;
 use crate::{APP_ID, DEVELOPER_NAME};
+use crate::window::build_ui_for_new_window;
 
 pub fn setup_shortcuts(app: &adw::Application) {
     app.set_accels_for_action("win.close", &["<Ctrl>W", "<Ctrl>Q"]);
@@ -18,6 +19,7 @@ pub fn setup_shortcuts(app: &adw::Application) {
     app.set_accels_for_action("win.find-next", &["<Ctrl>G"]);
     app.set_accels_for_action("win.find-previous", &["<Ctrl><Shift>G"]);
     app.set_accels_for_action("win.refresh", &["<Ctrl>R"]);
+    app.set_accels_for_action("app.new-window", &["<Ctrl>N"]);
 }
 
 pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState) {
@@ -145,4 +147,14 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
         action_close_repo,
         action_about,
     ]);
+}
+
+pub fn setup_app_action(app: &adw::Application) {
+    let app_clone = app.clone();
+    let action_new_window = ActionEntry::builder("new-window")
+        .activate(move |_, _, _| {
+            build_ui_for_new_window(&app_clone);
+        })
+        .build();
+    app.add_action_entries([action_new_window]);
 }

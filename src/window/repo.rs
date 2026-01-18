@@ -397,39 +397,12 @@ pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
     *ui.repo_view.is_expanded.borrow_mut() = false;
 }
 
-pub fn maybe_load_repo_from_args(
+pub fn maybe_load_repo_from_cwd(
     window: &gtk::ApplicationWindow,
     ui: &WindowUi,
     state: &AppState,
     app_name: &str,
 ) -> bool {
-    let repo_arg: Option<PathBuf> = std::env::args_os().skip(1).find_map(|a| {
-        // Ignore flags; treat the first non-flag arg as a path
-        let s = a.to_string_lossy();
-        if s.starts_with('-') {
-            None
-        } else {
-            Some(PathBuf::from(a))
-        }
-    });
-
-    if let Some(path) = repo_arg {
-        if path.exists() {
-            if let Err(e) = git::validate_repository(&path) {
-                show_repo_error(window, &path, &e.to_string());
-                ui.set_repo_controls_visible(false);
-                ui.show_welcome();
-                return false;
-            }
-            // For non-portal access, real_path and sandbox_path are the same
-            recent_repos::add_recent_repo(&path, &path);
-            ui.set_repo_controls_visible(true);
-            ui.show_main();
-            load_repo(ui, state, app_name, path, None);
-            return true;
-        }
-    }
-
     // If launched from a terminal, auto-open the current working directory if it
     // is inside a Git repository (worktree root preferred).
     if let Ok(cwd) = std::env::current_dir() {
