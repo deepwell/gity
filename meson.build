@@ -86,10 +86,17 @@ install_data(
 )
 
 # Icon installation (SVG for scalable icons)
+
+# 1. Install Normal (Scalable) App Icon
 install_data(
-  'data/icons/app.svg',
+  'data/icons/hicolor/scalable/apps/com.markdeepwell.GitY.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps',
-  rename: 'com.markdeepwell.GitY.svg',
+)
+
+# 2. Install Symbolic Icon
+install_data(
+  'data/icons/hicolor/symbolic/apps/com.markdeepwell.GitY-symbolic.svg',
+  install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'symbolic' / 'apps',
 )
 
 # Compile schemas in install location
