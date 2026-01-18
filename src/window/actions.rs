@@ -10,7 +10,8 @@ use crate::{APP_ID, DEVELOPER_NAME};
 use crate::window::build_ui_for_new_window;
 
 pub fn setup_shortcuts(app: &adw::Application) {
-    app.set_accels_for_action("win.close", &["<Ctrl>W", "<Ctrl>Q"]);
+    app.set_accels_for_action("win.close", &["<Ctrl>W"]);
+    app.set_accels_for_action("app.quit", &["<Ctrl>Q"]);
     app.set_accels_for_action("win.open", &["<Ctrl>O"]);
     app.set_accels_for_action("win.close-repo", &["<Ctrl><Shift>W", "<Alt>Left"]);
     app.set_accels_for_action("win.show-help-overlay", &["<Ctrl>question"]);
@@ -156,5 +157,13 @@ pub fn setup_app_action(app: &adw::Application) {
             build_ui_for_new_window(&app_clone);
         })
         .build();
-    app.add_action_entries([action_new_window]);
+
+    let app_clone_quit = app.clone();
+    let action_quit = ActionEntry::builder("quit")
+        .activate(move |_, _, _| {
+            app_clone_quit.quit();
+        })
+        .build();
+
+    app.add_action_entries([action_new_window, action_quit]);
 }
