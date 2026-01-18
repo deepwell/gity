@@ -481,7 +481,8 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     // that can emit Gtk warnings (and we still get selection/copy).
     view.set_editable(false);
     view.set_cursor_visible(false);
-    view.set_can_focus(false);
+    // Allow focus so Ctrl+C works for copying selected text
+    view.set_can_focus(true);
     view.set_monospace(true);
     view.set_wrap_mode(gtk::WrapMode::None);
     view.set_show_line_numbers(false);
