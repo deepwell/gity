@@ -10,3 +10,15 @@
 .copy-filename-btn.success {
     opacity: 1;
 }
+
+.tag-chip {
+    min-height: 12px;
+    min-width: 0;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: 5px;
+    margin: 0;
+    color: #fff;
+    background: #2596be;
+}

@@ -4,6 +4,8 @@ use gtk::{glib, subclass::prelude::*};
 #[template(file = "grid_cell.ui")]
 pub struct GridCell {
     #[template_child]
+    pub container: TemplateChild<gtk::Box>,
+    #[template_child]
     // gtk::Inscription requires gtk>=4.8. If you target an older version of gtk, you should switch
     // to gtk::Label. The benefits for using gtk::Inscription are explained here
     // https://gtk-rs.org/gtk4-rs/git/docs/gtk4/struct.Inscription.html

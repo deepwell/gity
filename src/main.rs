@@ -79,7 +79,14 @@ fn main() -> glib::ExitCode {
     app.connect_activate(move |app| {
         // Only load from command-line args on the first window (initial launch)
         let is_first_window = app.windows().is_empty();
-        window::build_ui(app, if is_first_window { repo_arg_for_activate.as_ref() } else { None });
+        window::build_ui(
+            app,
+            if is_first_window {
+                repo_arg_for_activate.as_ref()
+            } else {
+                None
+            },
+        );
     });
 
     app.run()

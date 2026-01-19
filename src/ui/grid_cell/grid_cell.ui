@@ -2,8 +2,17 @@
 <interface>
   <template class="GridCell" parent="GtkWidget">
     <child>
-      <object class="GtkInscription" id="name">
-        <property name="xalign">0</property>
+      <object class="GtkBox" id="container">
+        <property name="orientation">horizontal</property>
+        <property name="spacing">6</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <child>
+          <object class="GtkInscription" id="name">
+            <property name="xalign">0</property>
+            <property name="hexpand">True</property>
+          </object>
+        </child>
       </object>
     </child>
   </template>

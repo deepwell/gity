@@ -1,6 +1,7 @@
 use chrono::prelude::*;
 use git2::{Commit, DiffOptions, ObjectType, Repository, Signature, Time};
 use git2::{DiffFormat, Error, Pathspec};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -47,6 +48,7 @@ pub struct GitCommit {
     pub author: String,
     pub message: String,
     pub date: String,
+    pub tags: Vec<String>,
 }
 
 impl fmt::Debug for GitCommit {
@@ -56,6 +58,7 @@ impl fmt::Debug for GitCommit {
             .field("message", &self.message)
             .field("author", &self.author)
             .field("date", &self.date)
+            .field("tags", &self.tags)
             .finish()
     }
 }
@@ -230,12 +233,13 @@ impl<'repo> CommitWalker<'repo> {
         Ok(true)
     }
 
-    fn to_git_commit(commit: &Commit) -> GitCommit {
+    fn to_git_commit(&self, commit: &Commit) -> GitCommit {
         GitCommit {
             message: String::from_utf8_lossy(commit.message_bytes()).to_string(),
             author: commit.author().name().unwrap_or("").to_string(),
             date: format_datetime(&commit.author().when()),
             id: commit.id().to_string(),
+            tags: Vec::new(), // Tags will be loaded asynchronously
         }
     }
 
@@ -261,7 +265,7 @@ impl<'repo> CommitWalker<'repo> {
             };
 
             match self.commit_passes_filters(&commit) {
-                Ok(true) => return Some(Ok(Self::to_git_commit(&commit))),
+                Ok(true) => return Some(Ok(self.to_git_commit(&commit))),
                 Ok(false) => continue,
                 Err(e) => return Some(Err(e)),
             }
@@ -317,6 +321,43 @@ fn format_datetime(time: &Time) -> String {
         .timestamp_opt(time.seconds() + (time.offset_minutes() as i64) * 60, 0)
         .unwrap();
     dt.format("%b %d, %Y %H:%M").to_string()
+}
+
+/// Build a cache mapping commit OIDs to their tag names.
+/// This is much more efficient than checking tags for each commit individually.
+pub fn build_tag_cache(repo: &Repository) -> HashMap<git2::Oid, Vec<String>> {
+    let mut cache: HashMap<git2::Oid, Vec<String>> = HashMap::new();
+
+    // Iterate through all references to find tags
+    if let Ok(refs) = repo.references() {
+        for reference in refs {
+            if let Ok(reference) = reference {
+                let name = match reference.name() {
+                    Some(n) => n,
+                    None => continue,
+                };
+
+                // Check if this is a tag reference
+                if !name.starts_with("refs/tags/") {
+                    continue;
+                }
+
+                // Get the tag name without the "refs/tags/" prefix
+                let tag_name = &name[10..];
+
+                // Try to resolve the reference to a commit
+                if let Ok(commit) = reference.peel_to_commit() {
+                    let commit_id = commit.id();
+                    cache
+                        .entry(commit_id)
+                        .or_insert_with(Vec::new)
+                        .push(tag_name.to_string());
+                }
+            }
+        }
+    }
+
+    cache
 }
 
 #[derive(Clone)]

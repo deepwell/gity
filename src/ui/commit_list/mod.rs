@@ -5,7 +5,8 @@
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use std::cell::Ref;
+use std::cell::{Cell, Ref, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,10 +82,18 @@ impl CommitList {
         let column_view = gtk::ColumnView::new(Some(selection_model.clone()));
 
         // Create column factories
-        let message_column = create_column("Message", 600, true, |c: &GitCommit| c.message.clone());
-        let author_column = create_column("Author", 150, false, |c: &GitCommit| c.author.clone());
-        let sha_column = create_column("SHA", 120, false, |c: &GitCommit| c.id.clone());
-        let date_column = create_column("Date", 200, false, |c: &GitCommit| c.date.clone());
+        let message_column = create_column("Message", 600, true, |c: &GitCommit| {
+            (c.tags.clone(), c.message.clone())
+        });
+        let author_column = create_column("Author", 150, false, |c: &GitCommit| {
+            (Vec::new(), c.author.clone())
+        });
+        let sha_column = create_column("SHA", 120, false, |c: &GitCommit| {
+            (Vec::new(), c.id.clone())
+        });
+        let date_column = create_column("Date", 200, false, |c: &GitCommit| {
+            (Vec::new(), c.date.clone())
+        });
 
         column_view.append_column(&message_column);
         column_view.append_column(&author_column);
@@ -197,7 +206,7 @@ enum CommitLoadResponse {
 /// Create a column for the commit list view.
 fn create_column<F>(title: &str, width: i32, expand: bool, extractor: F) -> gtk::ColumnViewColumn
 where
-    F: Fn(&GitCommit) -> String + 'static + Clone,
+    F: Fn(&GitCommit) -> (Vec<String>, String) + 'static + Clone,
 {
     let factory = gtk::SignalListItemFactory::new();
 
@@ -213,9 +222,8 @@ where
         let child = item.child().and_downcast::<GridCell>().unwrap();
         let entry_obj = item.item().and_downcast::<glib::BoxedAnyObject>().unwrap();
         let commit: Ref<GitCommit> = entry_obj.borrow();
-        let ent = Entry {
-            name: extractor_for_bind(&commit),
-        };
+        let (tags, name) = extractor_for_bind(&commit);
+        let ent = Entry { name, tags };
         child.set_entry(&ent);
     });
 
@@ -264,6 +272,137 @@ fn setup_infinite_scroll(
         });
 }
 
+/// Start asynchronous tag loading for commits in the store.
+fn start_async_tag_loading(
+    repo_path: PathBuf,
+    store: gio::ListStore,
+    paging_state: Rc<std::cell::RefCell<CommitPagingState>>,
+    expected_generation: u64,
+) {
+    // Channel to send tag cache from background thread to main thread
+    let (tag_cache_tx, tag_cache_rx) =
+        mpsc::channel::<std::collections::HashMap<git2::Oid, Vec<String>>>();
+
+    // Spawn background thread to build tag cache
+    std::thread::spawn(move || {
+        // Open repository and build tag cache
+        let repo = match git2::Repository::open(&repo_path) {
+            Ok(r) => r,
+            Err(_) => {
+                let _ = tag_cache_tx.send(std::collections::HashMap::new());
+                return;
+            }
+        };
+
+        let tag_cache = git::build_tag_cache(&repo);
+        let _ = tag_cache_tx.send(tag_cache);
+    });
+
+    // Process tag cache on main thread
+    let store_for_tags = store.clone();
+    let paging_state_for_tags = paging_state.clone();
+    let processed = Rc::new(Cell::new(0u32));
+    let tag_cache_opt: Rc<RefCell<Option<HashMap<git2::Oid, Vec<String>>>>> =
+        Rc::new(RefCell::new(None));
+
+    let processed_clone = processed.clone();
+    let tag_cache_clone = tag_cache_opt.clone();
+    let store_clone = store_for_tags.clone();
+    let paging_state_clone = paging_state_for_tags.clone();
+
+    // Poll for tag cache and process updates
+    glib::idle_add_local(move || {
+        // Try to receive tag cache if we don't have it yet
+        {
+            let mut cache_guard = tag_cache_clone.borrow_mut();
+            if cache_guard.is_none() {
+                match tag_cache_rx.try_recv() {
+                    Ok(cache) => {
+                        *cache_guard = Some(cache);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        // Not ready yet, check again
+                        return glib::ControlFlow::Continue;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        // Background thread finished without sending (error case)
+                        return glib::ControlFlow::Break;
+                    }
+                }
+            }
+        }
+
+        // Check if generation changed
+        if paging_state_clone.borrow().generation != expected_generation {
+            return glib::ControlFlow::Break;
+        }
+
+        // Get tag cache (keep borrow alive for the entire scope)
+        let cache_guard = tag_cache_clone.borrow();
+        let tag_cache = match cache_guard.as_ref() {
+            Some(cache) => cache,
+            None => return glib::ControlFlow::Continue,
+        };
+
+        // Process commits in batches to update UI progressively
+        // Continue processing even as new commits are added via pagination
+        let batch_size = 50;
+        let total_items = store_clone.n_items();
+        let current_processed = processed_clone.get();
+
+        // Process one batch per idle callback if there are items to process
+        if current_processed < total_items {
+            let batch_end = (current_processed + batch_size).min(total_items);
+            let mut updates = Vec::new();
+
+            // Collect updates for this batch
+            for i in current_processed..batch_end {
+                if let Some(item) = store_clone.item(i) {
+                    if let Ok(entry_obj) = item.downcast::<glib::BoxedAnyObject>() {
+                        let commit: Ref<GitCommit> = entry_obj.borrow();
+                        // Only process if tags haven't been loaded yet (empty tags)
+                        if commit.tags.is_empty() {
+                            if let Ok(commit_oid) = git2::Oid::from_str(&commit.id) {
+                                if let Some(tags) = tag_cache.get(&commit_oid) {
+                                    if !tags.is_empty() {
+                                        updates.push((i, tags.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update commits with tags
+            for (index, tags) in updates {
+                if let Some(item) = store_clone.item(index) {
+                    if let Ok(entry_obj) = item.downcast::<glib::BoxedAnyObject>() {
+                        let commit: Ref<GitCommit> = entry_obj.borrow();
+                        // Create a new GitCommit with updated tags
+                        let updated_commit = GitCommit {
+                            id: commit.id.clone(),
+                            author: commit.author.clone(),
+                            message: commit.message.clone(),
+                            date: commit.date.clone(),
+                            tags: tags.clone(),
+                        };
+                        // Replace the item in the store
+                        store_clone.remove(index);
+                        store_clone.insert(index, &glib::BoxedAnyObject::new(updated_commit));
+                    }
+                }
+            }
+
+            processed_clone.set(batch_end);
+        }
+
+        // Always continue to check for new commits (from pagination)
+        // The idle callback will be called again when there's idle time
+        glib::ControlFlow::Continue
+    });
+}
+
 /// Poll for commit page results from the background worker.
 fn poll_commit_pages(
     rx: mpsc::Receiver<CommitLoadResponse>,
@@ -298,6 +437,7 @@ fn poll_commit_pages(
                         message: commit.message,
                         author: commit.author,
                         date: commit.date,
+                        tags: commit.tags,
                     }));
                 }
 
@@ -327,6 +467,14 @@ fn poll_commit_pages(
                             ));
                         });
                     }
+
+                    // Start async tag loading after first page
+                    start_async_tag_loading(
+                        repo_path.clone(),
+                        store.clone(),
+                        paging_state.clone(),
+                        expected_generation,
+                    );
                 }
             }
             Ok(CommitLoadResponse::Error {
