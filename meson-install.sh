@@ -15,4 +15,3 @@ if [ ! -f "$BINARY_PATH" ]; then
 fi
 
 install -Dm755 "$BINARY_PATH" "$INSTALL_DIR/gity"
-

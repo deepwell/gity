@@ -15,4 +15,3 @@ if [ ! -f "$BINARY_PATH" ]; then
 fi
 
 exec env GSETTINGS_SCHEMA_DIR="$SCHEMA_DIR" "$BINARY_PATH" "$@"
-
