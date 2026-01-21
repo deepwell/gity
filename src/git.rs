@@ -8,6 +8,8 @@ use std::str;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::logger::Logger;
+
 /// Determines which ref the UI should open by default for the repository at `path`.
 ///
 /// Policy:
@@ -513,6 +515,9 @@ pub fn get_tags(path: &Path) -> Result<std::collections::HashMap<String, Vec<Str
     for tags in tag_map.values_mut() {
         tags.sort();
     }
+
+    let tag_count: usize = tag_map.values().map(|v| v.len()).sum();
+    Logger::info(&format!("Found {} tags in ({})", tag_count, path.display()));
 
     Ok(tag_map)
 }
