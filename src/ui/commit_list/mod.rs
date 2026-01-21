@@ -5,7 +5,8 @@
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use std::cell::Ref;
+use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,7 +53,7 @@ pub struct CommitPagingState {
 /// A scrollable list widget displaying git commits with infinite scroll support.
 ///
 /// The widget displays commits in a column view with:
-/// - Commit message
+/// - Commit message (with optional tag chips)
 /// - Author name
 /// - SHA (abbreviated)
 /// - Date
@@ -68,9 +69,11 @@ pub struct CommitList {
     /// The underlying data store.
     pub store: gio::ListStore,
     /// Shared paging state.
-    paging_state: Rc<std::cell::RefCell<CommitPagingState>>,
+    paging_state: Rc<RefCell<CommitPagingState>>,
     /// Generation counter for invalidating stale loads.
     generation_counter: Arc<AtomicU64>,
+    /// Tag mapping: commit SHA -> list of tag names.
+    tags: Rc<RefCell<HashMap<String, Vec<String>>>>,
 }
 
 impl CommitList {
@@ -80,8 +83,10 @@ impl CommitList {
         let selection_model = gtk::SingleSelection::new(Some(store.clone()));
         let column_view = gtk::ColumnView::new(Some(selection_model.clone()));
 
+        let tags: Rc<RefCell<HashMap<String, Vec<String>>>> = Rc::new(RefCell::new(HashMap::new()));
+
         // Create column factories
-        let message_column = create_column("Message", 600, true, |c: &GitCommit| c.message.clone());
+        let message_column = create_message_column_with_tags("Message", 600, tags.clone());
         let author_column = create_column("Author", 150, false, |c: &GitCommit| c.author.clone());
         let sha_column = create_column("SHA", 120, false, |c: &GitCommit| c.id.clone());
         let date_column = create_column("Date", 200, false, |c: &GitCommit| c.date.clone());
@@ -96,7 +101,7 @@ impl CommitList {
         scrolled_window.set_vexpand(true);
         scrolled_window.set_hexpand(true);
 
-        let paging_state = Rc::new(std::cell::RefCell::new(CommitPagingState::default()));
+        let paging_state = Rc::new(RefCell::new(CommitPagingState::default()));
         let generation_counter = Arc::new(AtomicU64::new(0));
 
         // Infinite scroll: request the next page when nearing the bottom.
@@ -108,6 +113,7 @@ impl CommitList {
             store,
             paging_state,
             generation_counter,
+            tags,
         }
     }
 
@@ -136,8 +142,22 @@ impl CommitList {
     }
 
     /// Get a clone of the paging state for external access.
-    pub fn paging_state(&self) -> Rc<std::cell::RefCell<CommitPagingState>> {
+    pub fn paging_state(&self) -> Rc<RefCell<CommitPagingState>> {
         self.paging_state.clone()
+    }
+
+    /// Set the tags for commits. This updates the tag display in the message column.
+    ///
+    /// # Arguments
+    /// * `new_tags` - HashMap mapping commit SHA to list of tag names
+    pub fn set_tags(&self, new_tags: HashMap<String, Vec<String>>) {
+        *self.tags.borrow_mut() = new_tags;
+        // Force the column view to rebind all visible items by triggering a model change
+        // We do this by notifying the selection model that items have changed
+        let n_items = self.store.n_items();
+        if n_items > 0 {
+            self.store.items_changed(0, n_items, n_items);
+        }
     }
 
     /// Clear all commits and stop any in-flight loading.
@@ -157,6 +177,9 @@ impl CommitList {
             st.done = true;
             st.pending_first_page_log = None;
         }
+
+        // Clear tags.
+        self.tags.borrow_mut().clear();
 
         // Clear UI list + selection.
         self.store.remove_all();
@@ -225,6 +248,107 @@ where
     if expand {
         column.set_expand(true);
     }
+    column
+}
+
+/// Create a tag chip label widget.
+fn create_tag_chip(tag_name: &str) -> gtk::Label {
+    let chip = gtk::Label::builder()
+        .label(tag_name)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .build();
+    chip.add_css_class("tag-chip");
+    chip
+}
+
+/// Create the message column with tag chip support.
+fn create_message_column_with_tags(
+    title: &str,
+    width: i32,
+    tags: Rc<RefCell<HashMap<String, Vec<String>>>>,
+) -> gtk::ColumnViewColumn {
+    let factory = gtk::SignalListItemFactory::new();
+
+    factory.connect_setup(|_factory, item| {
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        // Create a horizontal box to hold tag chips and the message
+        let container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+
+        // Message inscription (using gtk::Inscription for performance)
+        let message_label = gtk::Inscription::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        message_label.set_widget_name("commit-message");
+
+        container.append(&message_label);
+        item.set_child(Some(&container));
+    });
+
+    let tags_for_bind = tags.clone();
+    factory.connect_bind(move |_factory, item| {
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        let container = item.child().and_downcast::<gtk::Box>().unwrap();
+        let entry_obj = item.item().and_downcast::<glib::BoxedAnyObject>().unwrap();
+        let commit: Ref<GitCommit> = entry_obj.borrow();
+
+        // Remove any existing tag chips (keep only the message label)
+        while let Some(child) = container.first_child() {
+            if child.widget_name() == "commit-message" {
+                break;
+            }
+            container.remove(&child);
+        }
+
+        // Find the message label
+        let mut message_label: Option<gtk::Inscription> = None;
+        let mut child = container.first_child();
+        while let Some(widget) = child {
+            if widget.widget_name() == "commit-message" {
+                message_label = widget.downcast::<gtk::Inscription>().ok();
+                break;
+            }
+            child = widget.next_sibling();
+        }
+
+        // Add tag chips if this commit has tags
+        let tags_map = tags_for_bind.borrow();
+        if let Some(commit_tags) = tags_map.get(&commit.id) {
+            for tag_name in commit_tags {
+                let chip = create_tag_chip(tag_name);
+                container.prepend(&chip);
+            }
+        }
+
+        // Set the message text
+        if let Some(label) = message_label {
+            // Get first line of message for display
+            let first_line = commit.message.lines().next().unwrap_or("").trim();
+            label.set_text(Some(first_line));
+        }
+    });
+
+    factory.connect_unbind(move |_factory, item| {
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        if let Some(container) = item.child().and_downcast::<gtk::Box>() {
+            // Remove tag chips on unbind to clean up
+            while let Some(child) = container.first_child() {
+                if child.widget_name() == "commit-message" {
+                    break;
+                }
+                container.remove(&child);
+            }
+        }
+    });
+
+    let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
+    column.set_resizable(true);
+    column.set_fixed_width(width);
+    column.set_expand(true);
     column
 }
 

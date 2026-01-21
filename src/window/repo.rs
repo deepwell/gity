@@ -84,6 +84,16 @@ pub fn load_repo(
         }
         Err(e) => Logger::error(&format!("Error reading branches: {}", e)),
     }
+
+    // Load tags asynchronously on the main thread (after branches and commit list)
+    let commit_list = ui.repo_view.commit_list.clone();
+    let path_for_tags = path.clone();
+    glib::idle_add_local_once(move || match git::get_tags(&path_for_tags) {
+        Ok(tags) => {
+            commit_list.set_tags(tags);
+        }
+        Err(e) => Logger::error(&format!("Error loading tags: {}", e)),
+    });
 }
 
 pub fn open_repo_dialog(

@@ -465,3 +465,54 @@ pub fn checked_out_branch_name(path: &Path) -> Option<String> {
     }
     head.shorthand().map(|s| s.to_string())
 }
+
+/// Returns a mapping from commit SHA to tag names for all tags in the repository.
+///
+/// The returned HashMap maps full commit SHA strings to vectors of tag names
+/// that point to that commit (either directly or through tag objects).
+pub fn get_tags(path: &Path) -> Result<std::collections::HashMap<String, Vec<String>>, Error> {
+    use std::collections::HashMap;
+
+    let repo = Repository::open(path)?;
+    let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
+
+    repo.tag_foreach(|oid, name_bytes| {
+        // Tag names come as "refs/tags/tagname" - extract just the tag name
+        let name = str::from_utf8(name_bytes)
+            .ok()
+            .and_then(|s| s.strip_prefix("refs/tags/"))
+            .unwrap_or_else(|| str::from_utf8(name_bytes).unwrap_or(""))
+            .to_string();
+
+        if name.is_empty() {
+            return true; // continue iteration
+        }
+
+        // Resolve the tag to its target commit
+        // For lightweight tags, oid is the commit directly
+        // For annotated tags, we need to peel to the commit
+        let commit_oid = if let Ok(obj) = repo.find_object(oid, None) {
+            if let Ok(commit) = obj.peel_to_commit() {
+                commit.id()
+            } else {
+                oid
+            }
+        } else {
+            oid
+        };
+
+        tag_map
+            .entry(commit_oid.to_string())
+            .or_default()
+            .push(name);
+
+        true // continue iteration
+    })?;
+
+    // Sort tags alphabetically within each commit for consistent display
+    for tags in tag_map.values_mut() {
+        tags.sort();
+    }
+
+    Ok(tag_map)
+}

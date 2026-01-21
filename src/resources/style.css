@@ -10,3 +10,13 @@
 .copy-filename-btn.success {
     opacity: 1;
 }
+
+/* Tag chip styling for commit list */
+.tag-chip {
+    background-color: alpha(@accent_color, 0.2);
+    color: @accent_color;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.85em;
+    font-weight: 500;
+}

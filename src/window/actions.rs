@@ -6,8 +6,8 @@ use super::repo;
 use super::search;
 use super::state::AppState;
 use super::ui::WindowUi;
-use crate::{APP_ID, DEVELOPER_NAME};
 use crate::window::build_ui_for_new_window;
+use crate::{APP_ID, DEVELOPER_NAME};
 
 pub fn setup_shortcuts(app: &adw::Application) {
     app.set_accels_for_action("win.close", &["<Ctrl>W"]);

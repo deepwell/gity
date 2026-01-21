@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const APP_NAME: &str = "GitY";
 
-fn setup_window(application: &adw::Application) -> (gtk::ApplicationWindow, ui::WindowUi, state::AppState) {
+fn setup_window(
+    application: &adw::Application,
+) -> (gtk::ApplicationWindow, ui::WindowUi, state::AppState) {
     // Load GSettings
     let settings = gio::Settings::new(APP_ID);
 
@@ -42,11 +44,7 @@ fn setup_window(application: &adw::Application) -> (gtk::ApplicationWindow, ui::
     (window, ui, app_state)
 }
 
-fn wire_window(
-    window: &gtk::ApplicationWindow,
-    ui: &ui::WindowUi,
-    app_state: &state::AppState,
-) {
+fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &state::AppState) {
     // Branch selection reload (not an action).
     let current_path_for_branch = app_state.current_path.clone();
     let ui_for_branch_select = ui.clone();
