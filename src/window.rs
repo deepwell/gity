@@ -45,8 +45,7 @@ fn setup_window(
 }
 
 fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &state::AppState) {
-    // Branch selection reload (not an action).
-    let current_path_for_branch = app_state.current_path.clone();
+    // Branch selection: switch branch within the same repo (reuses tags).
     let ui_for_branch_select = ui.clone();
     let state_for_branch_select = app_state.clone();
     ui.repo_view
@@ -56,16 +55,7 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
             if state_for_branch_select.current_branch.borrow().as_deref() == Some(branch_name) {
                 return;
             }
-            let path_opt = current_path_for_branch.borrow().clone();
-            if let Some(path) = path_opt {
-                repo::load_repo(
-                    &ui_for_branch_select,
-                    &state_for_branch_select,
-                    APP_NAME,
-                    path,
-                    Some(branch_name.to_string()),
-                );
-            }
+            repo::switch_branch(&ui_for_branch_select, &state_for_branch_select, branch_name);
         });
 
     // Wire actions + button handlers.

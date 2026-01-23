@@ -96,6 +96,30 @@ pub fn load_repo(
     });
 }
 
+/// Switch to a different branch within the same repository.
+///
+/// This is more efficient than `load_repo` as it only reloads the commit list,
+/// reusing already-loaded tags (which are global to the repository).
+pub fn switch_branch(ui: &WindowUi, state: &AppState, branch_name: &str) {
+    let Some(path) = state.current_path.borrow().clone() else {
+        Logger::error("Cannot switch branch: no repository loaded");
+        return;
+    };
+
+    // Update current branch state
+    *state.current_branch.borrow_mut() = Some(branch_name.to_string());
+
+    // Reload only the commit list (tags are already loaded and don't change per-branch)
+    ui.repo_view
+        .commit_list
+        .load_commits(path, branch_name.to_string(), {
+            let current_branch = state.current_branch.clone();
+            move |branch_name| {
+                *current_branch.borrow_mut() = Some(branch_name);
+            }
+        });
+}
+
 pub fn open_repo_dialog(
     window: &gtk::ApplicationWindow,
     ui: &WindowUi,
