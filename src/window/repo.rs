@@ -66,6 +66,14 @@ pub fn load_repo(
     ui.title_label
         .set_text(&format!("{} - {}", app_name, folder_name));
 
+    // Load tags before commits so they're available when the commit list renders
+    match git::get_tags(&path) {
+        Ok(tags) => {
+            ui.repo_view.commit_list.set_tags(tags);
+        }
+        Err(e) => Logger::error(&format!("Error loading tags: {}", e)),
+    }
+
     ui.repo_view
         .commit_list
         .load_commits(path.clone(), effective_branch.clone(), {
@@ -84,16 +92,6 @@ pub fn load_repo(
         }
         Err(e) => Logger::error(&format!("Error reading branches: {}", e)),
     }
-
-    // Load tags asynchronously on the main thread (after branches and commit list)
-    let commit_list = ui.repo_view.commit_list.clone();
-    let path_for_tags = path.clone();
-    glib::idle_add_local_once(move || match git::get_tags(&path_for_tags) {
-        Ok(tags) => {
-            commit_list.set_tags(tags);
-        }
-        Err(e) => Logger::error(&format!("Error loading tags: {}", e)),
-    });
 }
 
 /// Switch to a different branch within the same repository.

@@ -152,8 +152,8 @@ impl CommitList {
     /// * `new_tags` - HashMap mapping commit SHA to list of tag names
     pub fn set_tags(&self, new_tags: HashMap<String, Vec<String>>) {
         *self.tags.borrow_mut() = new_tags;
-        // Force the column view to rebind all visible items by triggering a model change
-        // We do this by notifying the selection model that items have changed
+        // Trigger rebind of visible items to show tags.
+        // This is safe because tag chips are pre-allocated (not dynamically added/removed).
         let n_items = self.store.n_items();
         if n_items > 0 {
             self.store.items_changed(0, n_items, n_items);
@@ -251,18 +251,24 @@ where
     column
 }
 
-/// Create a tag chip label widget.
-fn create_tag_chip(tag_name: &str) -> gtk::Label {
+/// Maximum number of pre-allocated tag chips per row.
+/// Most commits have 0-2 tags; 5 should cover edge cases.
+const MAX_TAG_CHIPS: usize = 5;
+
+/// Create a pre-allocated tag chip label widget (hidden by default).
+fn create_tag_chip() -> gtk::Label {
     let chip = gtk::Label::builder()
-        .label(tag_name)
         .halign(gtk::Align::Start)
         .valign(gtk::Align::Center)
+        .visible(false)
         .build();
     chip.add_css_class("tag-chip");
+    chip.set_widget_name("tag-chip");
     chip
 }
 
 /// Create the message column with tag chip support.
+/// Tag chips are pre-allocated during setup to avoid GTK state tracking issues.
 fn create_message_column_with_tags(
     title: &str,
     width: i32,
@@ -277,6 +283,12 @@ fn create_message_column_with_tags(
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
             .build();
+
+        // Pre-allocate tag chip labels (hidden by default)
+        for _ in 0..MAX_TAG_CHIPS {
+            let chip = create_tag_chip();
+            container.append(&chip);
+        }
 
         // Message inscription (using gtk::Inscription for performance)
         let message_label = gtk::Inscription::builder()
@@ -296,51 +308,49 @@ fn create_message_column_with_tags(
         let entry_obj = item.item().and_downcast::<glib::BoxedAnyObject>().unwrap();
         let commit: Ref<GitCommit> = entry_obj.borrow();
 
-        // Remove any existing tag chips (keep only the message label)
-        while let Some(child) = container.first_child() {
-            if child.widget_name() == "commit-message" {
-                break;
-            }
-            container.remove(&child);
-        }
+        // Get tags for this commit
+        let tags_map = tags_for_bind.borrow();
+        let commit_tags = tags_map.get(&commit.id);
 
-        // Find the message label
-        let mut message_label: Option<gtk::Inscription> = None;
+        // Update pre-allocated tag chips (show/hide and set text)
+        let mut chip_index = 0;
         let mut child = container.first_child();
         while let Some(widget) = child {
-            if widget.widget_name() == "commit-message" {
-                message_label = widget.downcast::<gtk::Inscription>().ok();
-                break;
+            if widget.widget_name() == "tag-chip" {
+                if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
+                    if let Some(tags) = commit_tags {
+                        if chip_index < tags.len() {
+                            chip.set_label(&tags[chip_index]);
+                            chip.set_visible(true);
+                        } else {
+                            chip.set_visible(false);
+                        }
+                    } else {
+                        chip.set_visible(false);
+                    }
+                    chip_index += 1;
+                }
+            } else if widget.widget_name() == "commit-message" {
+                // Set the message text
+                if let Some(label) = widget.downcast_ref::<gtk::Inscription>() {
+                    let first_line = commit.message.lines().next().unwrap_or("").trim();
+                    label.set_text(Some(first_line));
+                }
             }
             child = widget.next_sibling();
         }
-
-        // Add tag chips if this commit has tags
-        let tags_map = tags_for_bind.borrow();
-        if let Some(commit_tags) = tags_map.get(&commit.id) {
-            for tag_name in commit_tags {
-                let chip = create_tag_chip(tag_name);
-                container.prepend(&chip);
-            }
-        }
-
-        // Set the message text
-        if let Some(label) = message_label {
-            // Get first line of message for display
-            let first_line = commit.message.lines().next().unwrap_or("").trim();
-            label.set_text(Some(first_line));
-        }
     });
 
-    factory.connect_unbind(move |_factory, item| {
+    factory.connect_unbind(|_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         if let Some(container) = item.child().and_downcast::<gtk::Box>() {
-            // Remove tag chips on unbind to clean up
-            while let Some(child) = container.first_child() {
-                if child.widget_name() == "commit-message" {
-                    break;
+            // Hide all tag chips on unbind (don't remove them)
+            let mut child = container.first_child();
+            while let Some(widget) = child {
+                if widget.widget_name() == "tag-chip" {
+                    widget.set_visible(false);
                 }
-                container.remove(&child);
+                child = widget.next_sibling();
             }
         }
     });
