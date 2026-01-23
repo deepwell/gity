@@ -31,5 +31,15 @@
       <summary>Recent repositories</summary>
       <description>JSON array of recent repository entries with real_path and sandbox_path</description>
     </key>
+    <key name="branches-expanded" type="b">
+      <default>true</default>
+      <summary>Branches section expanded</summary>
+      <description>Whether the branches section is expanded in the branch panel</description>
+    </key>
+    <key name="tags-expanded" type="b">
+      <default>true</default>
+      <summary>Tags section expanded</summary>
+      <description>Whether the tags section is expanded in the branch panel</description>
+    </key>
   </schema>
 </schemalist>

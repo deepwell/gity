@@ -1,3 +1,26 @@
+/* BRANCH_PANEL */
+.branch-panel {
+    background-color: @view_bg_color;
+}
+
+/* Branch panel section expanders */
+.branch-panel-expander-label {
+    padding: 8px 12px;
+    border-radius: 6px;
+}
+
+/* COMMIT LIST */
+/* Tag chip styling */
+.tag-chip {
+    background-color: alpha(@accent_color, 0.2);
+    color: @accent_color;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
+/* COMMIT DIFF */
 .copy-filename-btn {
     opacity: 0;
     transition: opacity 150ms ease-in-out;
@@ -9,14 +32,4 @@
 .copy-filename-btn.visible,
 .copy-filename-btn.success {
     opacity: 1;
-}
-
-/* Tag chip styling for commit list */
-.tag-chip {
-    background-color: alpha(@accent_color, 0.2);
-    color: @accent_color;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 0.85em;
-    font-weight: 500;
 }
