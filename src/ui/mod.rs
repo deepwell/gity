@@ -10,7 +10,7 @@ pub mod repo_view;
 pub mod styles;
 pub mod welcome_view;
 
-pub use branch_panel::BranchPanel;
+pub use branch_panel::{BranchPanel, RefType};
 pub use commit_list::{CommitList, CommitLoadRequest, CommitPagingState};
 pub use grid_cell::{Entry, GridCell};
 pub use repo_view::RepoView;

@@ -45,17 +45,27 @@ fn setup_window(
 }
 
 fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &state::AppState) {
-    // Branch selection: switch branch within the same repo (reuses tags).
-    let ui_for_branch_select = ui.clone();
-    let state_for_branch_select = app_state.clone();
+    // Ref selection: switch branch or tag within the same repo (reuses tags for commit display).
+    let ui_for_ref_select = ui.clone();
+    let state_for_ref_select = app_state.clone();
     ui.repo_view
         .branch_panel
-        .branch_selected(move |branch_name| {
+        .on_ref_selected(move |ref_name, ref_type| {
             // Avoid redundant reloads when selection changes programmatically.
-            if state_for_branch_select.current_branch.borrow().as_deref() == Some(branch_name) {
+            let current_ref = state_for_ref_select.current_ref.borrow();
+            let current_type = state_for_ref_select.current_ref_type.borrow();
+            if current_ref.as_deref() == Some(ref_name) && current_type.as_ref() == Some(&ref_type)
+            {
                 return;
             }
-            repo::switch_branch(&ui_for_branch_select, &state_for_branch_select, branch_name);
+            drop(current_ref);
+            drop(current_type);
+            repo::switch_ref(
+                &ui_for_ref_select,
+                &state_for_ref_select,
+                ref_name,
+                ref_type,
+            );
         });
 
     // Wire actions + button handlers.

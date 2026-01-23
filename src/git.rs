@@ -353,6 +353,50 @@ pub fn get_local_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
     Ok(branch_infos)
 }
 
+#[derive(Clone)]
+pub struct TagInfo {
+    pub name: String,
+    pub commit_time: DateTime<Utc>,
+}
+
+/// Returns a list of all tags in the repository with their commit times.
+///
+/// Tags are returned with the tag name and the time of the commit they point to.
+/// For annotated tags, this is the time of the tagged commit (not the tag creation time).
+pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
+    let repo = Repository::open(path)?;
+    let mut tag_infos = Vec::new();
+
+    repo.tag_foreach(|oid, name_bytes| {
+        // Tag names come as "refs/tags/tagname" - extract just the tag name
+        let name = str::from_utf8(name_bytes)
+            .ok()
+            .and_then(|s| s.strip_prefix("refs/tags/"))
+            .unwrap_or_else(|| str::from_utf8(name_bytes).unwrap_or(""))
+            .to_string();
+
+        if name.is_empty() {
+            return true; // continue iteration
+        }
+
+        // Resolve the tag to its target commit and get commit time
+        if let Ok(obj) = repo.find_object(oid, None) {
+            if let Ok(commit) = obj.peel_to_commit() {
+                let time = commit.time();
+                let commit_time = Utc
+                    .timestamp_opt(time.seconds() + (time.offset_minutes() as i64) * 60, 0)
+                    .unwrap();
+
+                tag_infos.push(TagInfo { name, commit_time });
+            }
+        }
+
+        true // continue iteration
+    })?;
+
+    Ok(tag_infos)
+}
+
 pub struct CommitMetadata {
     pub author_name: String,
     pub author_email: String,

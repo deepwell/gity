@@ -150,9 +150,9 @@ impl SearchController {
                 return;
             }
 
-            // Get current path and branch
+            // Get current path and ref
             let path_opt = state_for_changed.current_path.borrow().clone();
-            let branch_opt = state_for_changed.current_branch.borrow().clone();
+            let branch_opt = state_for_changed.current_ref.borrow().clone();
             if path_opt.is_none() {
                 search_status_label_for_changed.set_text("");
                 return;
@@ -237,7 +237,7 @@ impl SearchController {
                 }
 
                 let path_opt = state_for_enter.current_path.borrow().clone();
-                let branch_opt = state_for_enter.current_branch.borrow().clone();
+                let branch_opt = state_for_enter.current_ref.borrow().clone();
                 if path_opt.is_none() {
                     return glib::Propagation::Stop;
                 }
@@ -326,15 +326,14 @@ impl SearchController {
                 }
 
                 let path_opt = state.current_path.borrow().clone();
-                let branch_opt = state.current_branch.borrow().clone();
+                let ref_opt = state.current_ref.borrow().clone();
                 if path_opt.is_none() {
                     return;
                 }
                 let path = path_opt.unwrap();
-                let branch_ref = branch_opt.as_deref().unwrap_or("HEAD");
+                let ref_name = ref_opt.as_deref().unwrap_or("HEAD");
 
-                if let Some(target_index) =
-                    handler.compute_next_match_index(query, &path, branch_ref)
+                if let Some(target_index) = handler.compute_next_match_index(query, &path, ref_name)
                 {
                     let expected_generation = commit_paging_state.borrow().generation;
                     ensure_loaded_then_select(
@@ -375,15 +374,15 @@ impl SearchController {
                 }
 
                 let path_opt = state.current_path.borrow().clone();
-                let branch_opt = state.current_branch.borrow().clone();
+                let ref_opt = state.current_ref.borrow().clone();
                 if path_opt.is_none() {
                     return;
                 }
                 let path = path_opt.unwrap();
-                let branch_ref = branch_opt.as_deref().unwrap_or("HEAD");
+                let ref_name = ref_opt.as_deref().unwrap_or("HEAD");
 
                 if let Some(target_index) =
-                    handler.compute_previous_match_index(query, &path, branch_ref)
+                    handler.compute_previous_match_index(query, &path, ref_name)
                 {
                     let expected_generation = commit_paging_state.borrow().generation;
                     ensure_loaded_then_select(
