@@ -16,6 +16,8 @@ use super::ui::WindowUi;
 struct DiffColors {
     add_bg: &'static str,
     remove_bg: &'static str,
+    gutter_add_bg: &'static str,
+    gutter_remove_bg: &'static str,
     hunk_fg: &'static str,
     header_fg: &'static str,
 }
@@ -24,6 +26,8 @@ struct DiffColors {
 const DIFF_COLORS_LIGHT: DiffColors = DiffColors {
     add_bg: "#EBFCEC",
     remove_bg: "#ffebee",
+    gutter_add_bg: "#c1f7c2",    // Darker green for gutter
+    gutter_remove_bg: "#ffcdd2", // Darker red for gutter
     hunk_fg: "#1565c0",
     header_fg: "#6a1b9a",
 };
@@ -32,6 +36,8 @@ const DIFF_COLORS_LIGHT: DiffColors = DiffColors {
 const DIFF_COLORS_DARK: DiffColors = DiffColors {
     add_bg: "#1a3d1a",
     remove_bg: "#3d1a1a",
+    gutter_add_bg: "#2e5a2e",    // Brighter green for gutter
+    gutter_remove_bg: "#5a2e2e", // Brighter red for gutter
     hunk_fg: "#64b5f6",
     header_fg: "#ce93d8",
 };
@@ -51,6 +57,7 @@ fn update_diff_tag_colors(buffer: &gtk::TextBuffer) {
     let tag_table = buffer.tag_table();
     let colors = get_diff_colors();
 
+    // Code view tags
     if let Some(add_tag) = tag_table.lookup("diff-add") {
         add_tag.set_property("paragraph-background", &colors.add_bg);
     }
@@ -62,6 +69,14 @@ fn update_diff_tag_colors(buffer: &gtk::TextBuffer) {
     }
     if let Some(header_tag) = tag_table.lookup("diff-header") {
         header_tag.set_property("foreground", &colors.header_fg);
+    }
+
+    // Gutter-specific tags (darker colors)
+    if let Some(gutter_add_tag) = tag_table.lookup("gutter-add") {
+        gutter_add_tag.set_property("paragraph-background", &colors.gutter_add_bg);
+    }
+    if let Some(gutter_remove_tag) = tag_table.lookup("gutter-remove") {
+        gutter_remove_tag.set_property("paragraph-background", &colors.gutter_remove_bg);
     }
 }
 
@@ -77,10 +92,17 @@ fn refresh_diff_colors(diff_files_box: &gtk::Box) {
             if let Some(row) = expander.child() {
                 if let Ok(row_box) = row.downcast::<gtk::Box>() {
                     // The row contains: gutter (TextView) + h_scroller (ScrolledWindow)
-                    // Find the ScrolledWindow which contains the SourceView
                     let mut row_child = row_box.first_child();
                     while let Some(rc) = row_child {
                         let rc_next = rc.next_sibling();
+
+                        // Update gutter colors (first child is the gutter TextView)
+                        if let Ok(gutter_view) = rc.clone().downcast::<gtk::TextView>() {
+                            let buffer = gutter_view.buffer();
+                            update_diff_tag_colors(&buffer);
+                        }
+
+                        // Update code view colors (ScrolledWindow contains the SourceView)
                         if let Ok(scroller) = rc.clone().downcast::<gtk::ScrolledWindow>() {
                             if let Some(view_widget) = scroller.child() {
                                 if let Ok(source_view) = view_widget.downcast::<sv::View>() {
@@ -447,9 +469,9 @@ fn build_diff_gutter_and_text(diff_text: &str) -> (String, String, Vec<DiffLineK
 
     let width = max_old.max(max_new).to_string().len().max(1);
 
-    // Characters per gutter line: "<old> <new> <sym>"
+    // Characters per gutter line: " <old> <new> <sym>" (leading space for text padding)
     // old/new are both right-aligned to `width`.
-    let gutter_chars = width * 2 + 3;
+    let gutter_chars = width * 2 + 4; // +4 for: leading space, two separators, symbol
 
     let mut gutter = String::new();
     for (idx, (o, n, sym)) in gutter_lines.into_iter().enumerate() {
@@ -459,8 +481,9 @@ fn build_diff_gutter_and_text(diff_text: &str) -> (String, String, Vec<DiffLineK
         let o_s = o.map(|v| format!("{:>width$}", v, width = width));
         let n_s = n.map(|v| format!("{:>width$}", v, width = width));
 
-        // Format: " old new sym"
+        // Format: " old new sym" (leading space for left padding)
         // Keep a little breathing room between columns for readability.
+        gutter.push(' '); // Leading space for text padding
         gutter.push_str(o_s.as_deref().unwrap_or(&" ".repeat(width)));
         gutter.push(' ');
         gutter.push_str(n_s.as_deref().unwrap_or(&" ".repeat(width)));
@@ -525,6 +548,53 @@ fn apply_diff_line_tags_by_kind(buffer: &gtk::TextBuffer, kinds: &[DiffLineKind]
     }
 }
 
+/// Apply diff color tags to the gutter buffer based on line kinds.
+/// Uses darker/heavier colors than the code view for visual distinction.
+fn apply_gutter_line_tags(buffer: &gtk::TextBuffer, kinds: &[DiffLineKind]) {
+    let tag_table = buffer.tag_table();
+    let colors = get_diff_colors();
+
+    // Create or reuse gutter-specific tags with darker colors
+    let add_tag = tag_table.lookup("gutter-add").unwrap_or_else(|| {
+        let tag = gtk::TextTag::new(Some("gutter-add"));
+        tag_table.add(&tag);
+        tag
+    });
+    add_tag.set_property("paragraph-background", &colors.gutter_add_bg);
+    add_tag.set_property("paragraph-background-set", true);
+
+    let remove_tag = tag_table.lookup("gutter-remove").unwrap_or_else(|| {
+        let tag = gtk::TextTag::new(Some("gutter-remove"));
+        tag_table.add(&tag);
+        tag
+    });
+    remove_tag.set_property("paragraph-background", &colors.gutter_remove_bg);
+    remove_tag.set_property("paragraph-background-set", true);
+
+    // Clear any existing tags and apply based on line kind
+    let start = buffer.start_iter();
+    let end = buffer.end_iter();
+    buffer.remove_all_tags(&start, &end);
+
+    for (idx, kind) in kinds.iter().enumerate() {
+        let Some(line_start) = buffer.iter_at_line(idx as i32) else {
+            break;
+        };
+        let mut line_end = line_start.clone();
+        line_end.forward_to_line_end();
+
+        match kind {
+            DiffLineKind::Add => {
+                buffer.apply_tag(&add_tag, &line_start, &line_end);
+            }
+            DiffLineKind::Remove => {
+                buffer.apply_tag(&remove_tag, &line_start, &line_end);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) -> gtk::Box {
     let gutter_text = &prepared.gutter_text;
     let right_text = &prepared.right_text;
@@ -533,6 +603,7 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     // Left: gutter
     let gutter_buffer = gtk::TextBuffer::new(None);
     gutter_buffer.set_text(gutter_text);
+    apply_gutter_line_tags(&gutter_buffer, kinds);
 
     let gutter_view = gtk::TextView::with_buffer(&gutter_buffer);
     gutter_view.set_editable(false);
@@ -545,15 +616,16 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     gutter_view.set_pixels_below_lines(0);
     gutter_view.set_top_margin(0);
     gutter_view.set_bottom_margin(0);
-    gutter_view.set_left_margin(8);
+    gutter_view.set_left_margin(0);
     gutter_view.set_right_margin(0);
 
     // Size the gutter to the minimum width needed to show line numbers and symbols.
     // (Non-expanding, so the right pane takes the remaining space.)
+    // Text padding is included in gutter_chars via leading spaces.
     let probe = "0".repeat(global_gutter_chars.max(1));
     let layout = gutter_view.create_pango_layout(Some(&probe));
     let (probe_px, _) = layout.pixel_size();
-    gutter_view.set_width_request(probe_px + 8); // + left padding
+    gutter_view.set_width_request(probe_px);
     gutter_view.add_css_class("diff-gutter");
 
     // Right: diff text (single editable component)
@@ -597,11 +669,11 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     h_scroller.set_child(Some(&view));
 
     // Two-widget layout: gutter on the left, text on the right
+    // No spacing between gutter and code view so colored backgrounds are seamless
     let row = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .hexpand(true)
         .build();
-    row.set_spacing(8);
     row.append(&gutter_view);
     row.append(&h_scroller);
 
