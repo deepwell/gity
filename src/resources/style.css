@@ -33,3 +33,28 @@
 .copy-filename-btn.success {
     opacity: 1;
 }
+
+/* SKELETON LOADING */
+.skeleton {
+    border-radius: 4px;
+}
+
+.skeleton-line {
+    min-height: 16px;
+    margin: 4px 0;
+}
+
+.skeleton-line-short {
+    min-height: 14px;
+    margin: 3px 0;
+}
+
+.skeleton-file-header {
+    min-height: 24px;
+    margin-bottom: 8px;
+}
+
+.skeleton-diff-block {
+    min-height: 80px;
+    margin: 8px 0;
+}

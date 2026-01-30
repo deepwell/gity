@@ -173,6 +173,70 @@ fn set_placeholder(container: &gtk::Box, text: &str) {
     );
 }
 
+/// Creates a skeleton line widget for loading states
+fn skeleton_line(width_percent: i32, css_class: &str) -> gtk::Box {
+    let line = gtk::Box::builder().hexpand(false).build();
+    line.add_css_class("skeleton");
+    line.add_css_class(css_class);
+    // Use width_request as a percentage of typical width
+    line.set_width_request(width_percent * 3); // Scale factor for reasonable widths
+    line
+}
+
+/// Creates a skeleton file section mimicking a diff file expander
+fn skeleton_file_section() -> gtk::Box {
+    let section = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_start(10)
+        .margin_end(10)
+        .margin_top(8)
+        .build();
+
+    // File header skeleton
+    let header = skeleton_line(80, "skeleton-file-header");
+    section.append(&header);
+
+    // Diff content skeleton (a few lines)
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_start(8)
+        .build();
+    content.add_css_class("skeleton");
+    content.add_css_class("skeleton-diff-block");
+    content.set_hexpand(true);
+    section.append(&content);
+
+    section
+}
+
+/// Shows skeleton loading state for the diff files box
+fn set_diff_skeleton(container: &gtk::Box) {
+    clear_container(container);
+    // Show 3 skeleton file sections to mimic typical diff view
+    for _ in 0..3 {
+        container.append(&skeleton_file_section());
+    }
+}
+
+/// Shows skeleton loading state for author/metadata label
+fn set_metadata_skeleton(label: &gtk::Label, message_label: &gtk::Label) {
+    // Clear text and use a non-breaking space to maintain height
+    label.set_text("\u{00A0}");
+    label.add_css_class("skeleton");
+    label.set_width_request(400);
+
+    // Also show skeleton for commit message
+    message_label.set_text("\u{00A0}\n\u{00A0}\n\u{00A0}");
+    message_label.add_css_class("skeleton");
+}
+
+/// Removes skeleton styling from metadata labels
+fn clear_metadata_skeleton(label: &gtk::Label, message_label: &gtk::Label) {
+    label.remove_css_class("skeleton");
+    label.set_width_request(-1);
+    message_label.remove_css_class("skeleton");
+}
+
 fn diff_has_any_collapsed_file(diff_files_box: &gtk::Box) -> Option<bool> {
     // Returns:
     // - None: there are no file expanders (no diff loaded / placeholder)
@@ -897,6 +961,9 @@ fn poll_metadata_result(
 ) {
     match rx.try_recv() {
         Ok(Ok(metadata)) => {
+            // Clear skeleton styling
+            clear_metadata_skeleton(&diff_label, &commit_message_label);
+
             let label_text = format!(
                 "{} <{}> - {} - {}",
                 metadata.author_name, metadata.author_email, metadata.date_time, metadata.git_sha
@@ -914,7 +981,8 @@ fn poll_metadata_result(
             }
         }
         Ok(Err(_)) => {
-            // On error, keep default label
+            // Clear skeleton styling on error
+            clear_metadata_skeleton(&diff_label, &commit_message_label);
         }
         Err(mpsc::TryRecvError::Empty) => {
             let diff_label_clone = diff_label.clone();
@@ -934,17 +1002,17 @@ fn poll_metadata_result(
             });
         }
         Err(_) => {
-            // Channel closed, keep default label
+            // Channel closed, clear skeleton styling
+            clear_metadata_skeleton(&diff_label, &commit_message_label);
         }
     }
 }
 
 fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     if let Some(ref path) = *state.current_path.borrow() {
-        // Show loading message
-        set_placeholder(&ui.repo_view.diff_files_box, "Loading diff...");
-        ui.repo_view.diff_label.set_text("Loading author...");
-        ui.repo_view.commit_message_label.set_text("");
+        // Show skeleton loading state
+        set_diff_skeleton(&ui.repo_view.diff_files_box);
+        set_metadata_skeleton(&ui.repo_view.diff_label, &ui.repo_view.commit_message_label);
         ui.repo_view.expand_label.set_visible(false);
         *ui.repo_view.is_expanded.borrow_mut() = false;
         update_expand_toggle_button(
