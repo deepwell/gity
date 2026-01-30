@@ -12,6 +12,93 @@ use crate::git;
 use super::state::AppState;
 use super::ui::WindowUi;
 
+/// Colors used for diff highlighting
+struct DiffColors {
+    add_bg: &'static str,
+    remove_bg: &'static str,
+    hunk_fg: &'static str,
+    header_fg: &'static str,
+}
+
+/// Light mode diff colors
+const DIFF_COLORS_LIGHT: DiffColors = DiffColors {
+    add_bg: "#EBFCEC",
+    remove_bg: "#ffebee",
+    hunk_fg: "#1565c0",
+    header_fg: "#6a1b9a",
+};
+
+/// Dark mode diff colors
+const DIFF_COLORS_DARK: DiffColors = DiffColors {
+    add_bg: "#1a3d1a",
+    remove_bg: "#3d1a1a",
+    hunk_fg: "#64b5f6",
+    header_fg: "#ce93d8",
+};
+
+/// Get diff colors based on current color scheme (light/dark)
+fn get_diff_colors() -> &'static DiffColors {
+    if adw::StyleManager::default().is_dark() {
+        &DIFF_COLORS_DARK
+    } else {
+        &DIFF_COLORS_LIGHT
+    }
+}
+
+/// Update existing diff tag colors without re-applying tags to text.
+/// This is used when the theme changes to refresh colors in-place.
+fn update_diff_tag_colors(buffer: &gtk::TextBuffer) {
+    let tag_table = buffer.tag_table();
+    let colors = get_diff_colors();
+
+    if let Some(add_tag) = tag_table.lookup("diff-add") {
+        add_tag.set_property("paragraph-background", &colors.add_bg);
+    }
+    if let Some(remove_tag) = tag_table.lookup("diff-remove") {
+        remove_tag.set_property("paragraph-background", &colors.remove_bg);
+    }
+    if let Some(hunk_tag) = tag_table.lookup("diff-hunk") {
+        hunk_tag.set_property("foreground", &colors.hunk_fg);
+    }
+    if let Some(header_tag) = tag_table.lookup("diff-header") {
+        header_tag.set_property("foreground", &colors.header_fg);
+    }
+}
+
+/// Refresh diff colors for all visible diff sections when theme changes.
+fn refresh_diff_colors(diff_files_box: &gtk::Box) {
+    let mut child = diff_files_box.first_child();
+    while let Some(widget) = child {
+        let next = widget.next_sibling();
+
+        // Each file section is an Expander
+        if let Ok(expander) = widget.clone().downcast::<gtk::Expander>() {
+            // Only process expanded sections (collapsed ones have no child widget)
+            if let Some(row) = expander.child() {
+                if let Ok(row_box) = row.downcast::<gtk::Box>() {
+                    // The row contains: gutter (TextView) + h_scroller (ScrolledWindow)
+                    // Find the ScrolledWindow which contains the SourceView
+                    let mut row_child = row_box.first_child();
+                    while let Some(rc) = row_child {
+                        let rc_next = rc.next_sibling();
+                        if let Ok(scroller) = rc.clone().downcast::<gtk::ScrolledWindow>() {
+                            if let Some(view_widget) = scroller.child() {
+                                if let Ok(source_view) = view_widget.downcast::<sv::View>() {
+                                    let buffer = source_view.buffer();
+                                    update_diff_tag_colors(buffer.upcast_ref::<gtk::TextBuffer>());
+                                }
+                            }
+                        }
+                        row_child = rc_next;
+                    }
+                }
+            }
+        }
+
+        child = next;
+    }
+}
+
 // Performance tuning:
 // - Huge diffs can contain many files and many lines. Building a TextView/SourceView pair for
 //   every file (and expanding them all) makes any resize of the surrounding layout very costly
@@ -175,6 +262,7 @@ fn parse_diff_sections(diff: &str) -> Vec<DiffSection> {
 
 fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
     let tag_table = buffer.tag_table();
+    let colors = get_diff_colors();
 
     // Tags are best-effort: if they already exist, re-use them.
     let add_tag = tag_table.lookup("diff-add").unwrap_or_else(|| {
@@ -184,7 +272,7 @@ fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
     });
     // Use paragraph background so the highlight spans the whole line to the right edge,
     // not just behind the glyphs.
-    add_tag.set_property("paragraph-background", "#EBFCEC");
+    add_tag.set_property("paragraph-background", &colors.add_bg);
     add_tag.set_property("paragraph-background-set", true);
     add_tag.set_property("weight-set", true);
 
@@ -193,25 +281,25 @@ fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
         tag_table.add(&tag);
         tag
     });
-    remove_tag.set_property("paragraph-background", "#ffebee");
+    remove_tag.set_property("paragraph-background", &colors.remove_bg);
     remove_tag.set_property("paragraph-background-set", true);
     remove_tag.set_property("weight-set", true);
 
     let hunk_tag = tag_table.lookup("diff-hunk").unwrap_or_else(|| {
         let tag = gtk::TextTag::new(Some("diff-hunk"));
-        tag.set_property("foreground", "#1565c0"); // blue-ish
-        tag.set_property("weight-set", true);
         tag_table.add(&tag);
         tag
     });
+    hunk_tag.set_property("foreground", &colors.hunk_fg);
+    hunk_tag.set_property("weight-set", true);
 
     let header_tag = tag_table.lookup("diff-header").unwrap_or_else(|| {
         let tag = gtk::TextTag::new(Some("diff-header"));
-        tag.set_property("foreground", "#6a1b9a"); // purple-ish
-        tag.set_property("weight-set", true);
         tag_table.add(&tag);
         tag
     });
+    header_tag.set_property("foreground", &colors.header_fg);
+    header_tag.set_property("weight-set", true);
 
     let start = buffer.start_iter();
     let end = buffer.end_iter();
@@ -494,6 +582,7 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     view.set_bottom_margin(0);
     view.set_left_margin(0);
     view.set_right_margin(0);
+    view.add_css_class("diff-view");
 
     // Horizontal scrolling (per file):
     // The outer diff panel already provides vertical scrolling. Wrapping each file's text view in a
@@ -850,6 +939,12 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
             set_all_file_expanders(&diff_files_box_for_toggle, any_collapsed);
             update_expand_toggle_button(&diff_files_box_for_toggle, &toggle_for_click);
         });
+
+    // Refresh diff colors when theme changes (light/dark mode switch)
+    let diff_files_box_for_theme = ui.repo_view.diff_files_box.clone();
+    adw::StyleManager::default().connect_dark_notify(move |_| {
+        refresh_diff_colors(&diff_files_box_for_theme);
+    });
 
     let ui_for_selection = ui.clone();
     let state_for_selection = state.clone();
