@@ -20,6 +20,17 @@
     font-weight: 500;
 }
 
+/* Upstream (remote tracking) branch chip */
+.upstream-chip {
+    background-color: alpha(@window_bg_color, 0.8);
+    color: @insensitive_fg_color;
+    border: 1px solid @borders;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
 /* COMMIT DIFF */
 .copy-filename-btn {
     opacity: 0;

@@ -76,6 +76,11 @@ pub fn load_repo(
         Err(e) => Logger::error(&format!("Error loading tags: {}", e)),
     }
 
+    // Show upstream chip on the commit where the upstream branch points (if any)
+    ui.repo_view
+        .commit_list
+        .set_upstream(git::get_branch_upstream(&path, &effective_ref));
+
     ui.repo_view
         .commit_list
         .load_commits(path.clone(), effective_ref.clone(), {
@@ -126,6 +131,9 @@ pub fn switch_ref(ui: &WindowUi, state: &AppState, ref_name: &str, ref_type: Ref
     *state.current_ref_type.borrow_mut() = Some(ref_type);
 
     // Reload only the commit list (tags are already loaded and don't change per-ref)
+    ui.repo_view
+        .commit_list
+        .set_upstream(git::get_branch_upstream(&path, ref_name));
     ui.repo_view
         .commit_list
         .load_commits(path, ref_name.to_string(), {
