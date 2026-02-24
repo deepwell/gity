@@ -128,7 +128,11 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
                 .application_name(super::APP_NAME)
                 .application_icon(APP_ID)
                 .developer_name(DEVELOPER_NAME)
-                .version(env!("CARGO_PKG_VERSION"))
+                .version(if cfg!(debug_assertions) {
+                    concat!(env!("CARGO_PKG_VERSION"), "-Devel")
+                } else {
+                    env!("CARGO_PKG_VERSION")
+                })
                 .website("https://github.com/deepwell/gity")
                 .issue_url("https://github.com/deepwell/gity/issues")
                 .license_type(gtk::License::Gpl30)

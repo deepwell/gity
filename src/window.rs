@@ -29,6 +29,9 @@ fn setup_window(
         .title(APP_NAME)
         .build();
 
+    #[cfg(debug_assertions)]
+    window.add_css_class("devel");
+
     // Restore window state from GSettings
     let width = settings.int("window-width");
     let height = settings.int("window-height");
