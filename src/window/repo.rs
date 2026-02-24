@@ -81,6 +81,11 @@ pub fn load_repo(
         .commit_list
         .set_upstream(git::get_branch_upstream(&path, &effective_ref));
 
+    // Show "main" chip when viewing a different branch
+    ui.repo_view
+        .commit_list
+        .set_branch_head(git::get_main_branch_head(&path, &effective_ref));
+
     ui.repo_view
         .commit_list
         .load_commits(path.clone(), effective_ref.clone(), {
@@ -134,6 +139,9 @@ pub fn switch_ref(ui: &WindowUi, state: &AppState, ref_name: &str, ref_type: Ref
     ui.repo_view
         .commit_list
         .set_upstream(git::get_branch_upstream(&path, ref_name));
+    ui.repo_view
+        .commit_list
+        .set_branch_head(git::get_main_branch_head(&path, ref_name));
     ui.repo_view
         .commit_list
         .load_commits(path, ref_name.to_string(), {

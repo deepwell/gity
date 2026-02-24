@@ -512,6 +512,26 @@ pub fn checked_out_branch_name(path: &Path) -> Option<String> {
     head.shorthand().map(|s| s.to_string())
 }
 
+/// Returns the name and HEAD commit SHA of the repository's primary branch
+/// (`main` or `master`), but only when `current_ref` is a *different* branch.
+/// Used to show a "main" chip on the commit where the primary branch sits.
+pub fn get_main_branch_head(path: &Path, current_ref: &str) -> Option<(String, String)> {
+    let repo = Repository::open(path).ok()?;
+
+    for branch_name in &["main", "master"] {
+        if *branch_name == current_ref {
+            return None;
+        }
+        let ref_name = format!("refs/heads/{}", branch_name);
+        if let Ok(reference) = repo.find_reference(&ref_name) {
+            if let Ok(commit) = reference.peel_to_commit() {
+                return Some((branch_name.to_string(), commit.id().to_string()));
+            }
+        }
+    }
+    None
+}
+
 /// If the given branch has an upstream remote (e.g. `origin/main`), returns
 /// `Some((upstream_ref_name, commit_sha))` so the UI can show a chip on that commit.
 /// Returns `None` if the ref is not a local branch or has no upstream.

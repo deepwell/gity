@@ -76,6 +76,8 @@ pub struct CommitList {
     tags: Rc<RefCell<HashMap<String, Vec<String>>>>,
     /// Upstream branch for current ref: (ref_name, commit_sha) to show a chip on that commit.
     upstream: Rc<RefCell<Option<(String, String)>>>,
+    /// Primary branch head: (branch_name, commit_sha) to show a chip when viewing another branch.
+    branch_head: Rc<RefCell<Option<(String, String)>>>,
 }
 
 impl CommitList {
@@ -87,10 +89,16 @@ impl CommitList {
 
         let tags: Rc<RefCell<HashMap<String, Vec<String>>>> = Rc::new(RefCell::new(HashMap::new()));
         let upstream: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
+        let branch_head: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
 
         // Create column factories
-        let message_column =
-            create_message_column_with_tags("Message", 600, tags.clone(), upstream.clone());
+        let message_column = create_message_column_with_tags(
+            "Message",
+            600,
+            tags.clone(),
+            upstream.clone(),
+            branch_head.clone(),
+        );
         let author_column = create_column("Author", 150, false, |c: &GitCommit| c.author.clone());
         let sha_column = create_column("SHA", 120, false, |c: &GitCommit| c.id.clone());
         let date_column = create_column("Date", 200, false, |c: &GitCommit| c.date.clone());
@@ -119,6 +127,7 @@ impl CommitList {
             generation_counter,
             tags,
             upstream,
+            branch_head,
         }
     }
 
@@ -175,6 +184,16 @@ impl CommitList {
         }
     }
 
+    /// Set the primary branch head. When set, a chip (e.g. "main") is shown on the commit
+    /// where that branch currently points. Pass `None` to hide the chip.
+    pub fn set_branch_head(&self, branch_head: Option<(String, String)>) {
+        *self.branch_head.borrow_mut() = branch_head;
+        let n_items = self.store.n_items();
+        if n_items > 0 {
+            self.store.items_changed(0, n_items, n_items);
+        }
+    }
+
     /// Clear all commits and stop any in-flight loading.
     pub fn clear(&self) {
         // Invalidate any in-flight paging generation and stop the worker.
@@ -193,9 +212,10 @@ impl CommitList {
             st.pending_first_page_log = None;
         }
 
-        // Clear tags and upstream.
+        // Clear tags, upstream, and branch head.
         self.tags.borrow_mut().clear();
         *self.upstream.borrow_mut() = None;
+        *self.branch_head.borrow_mut() = None;
 
         // Clear UI list + selection.
         self.store.remove_all();
@@ -283,6 +303,18 @@ fn create_tag_chip() -> gtk::Label {
     chip
 }
 
+/// Create a pre-allocated branch head chip label (hidden by default).
+fn create_branch_chip() -> gtk::Label {
+    let chip = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
+    chip.add_css_class("branch-chip");
+    chip.set_widget_name("branch-chip");
+    chip
+}
+
 /// Create a pre-allocated upstream chip label (hidden by default).
 fn create_upstream_chip() -> gtk::Label {
     let chip = gtk::Label::builder()
@@ -295,23 +327,27 @@ fn create_upstream_chip() -> gtk::Label {
     chip
 }
 
-/// Create the message column with tag chip and optional upstream chip support.
+/// Create the message column with branch head, upstream, and tag chip support.
 /// Chips are pre-allocated during setup to avoid GTK state tracking issues.
 fn create_message_column_with_tags(
     title: &str,
     width: i32,
     tags: Rc<RefCell<HashMap<String, Vec<String>>>>,
     upstream: Rc<RefCell<Option<(String, String)>>>,
+    branch_head: Rc<RefCell<Option<(String, String)>>>,
 ) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
 
     factory.connect_setup(|_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        // Create a horizontal box to hold upstream chip, tag chips, and the message
         let container = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
             .build();
+
+        // Branch head chip (e.g. "main"), shown when viewing a different branch
+        let branch_chip = create_branch_chip();
+        container.append(&branch_chip);
 
         // Upstream chip (one per row, shown when commit is upstream HEAD)
         let upstream_chip = create_upstream_chip();
@@ -336,6 +372,7 @@ fn create_message_column_with_tags(
 
     let tags_for_bind = tags.clone();
     let upstream_for_bind = upstream.clone();
+    let branch_head_for_bind = branch_head.clone();
     factory.connect_bind(move |_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         let container = item.child().and_downcast::<gtk::Box>().unwrap();
@@ -345,12 +382,25 @@ fn create_message_column_with_tags(
         let tags_map = tags_for_bind.borrow();
         let commit_tags = tags_map.get(&commit.id);
         let upstream_opt = upstream_for_bind.borrow().clone();
+        let branch_head_opt = branch_head_for_bind.borrow().clone();
 
-        // Update upstream chip and pre-allocated tag chips (show/hide and set text)
         let mut chip_index = 0;
         let mut child = container.first_child();
         while let Some(widget) = child {
-            if widget.widget_name() == "upstream-chip" {
+            if widget.widget_name() == "branch-chip" {
+                if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
+                    if let Some((ref name, ref sha)) = branch_head_opt {
+                        if commit.id == *sha {
+                            chip.set_label(name);
+                            chip.set_visible(true);
+                        } else {
+                            chip.set_visible(false);
+                        }
+                    } else {
+                        chip.set_visible(false);
+                    }
+                }
+            } else if widget.widget_name() == "upstream-chip" {
                 if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
                     if let Some((ref_name, sha)) = upstream_opt.as_ref() {
                         if commit.id == *sha {
@@ -391,10 +441,10 @@ fn create_message_column_with_tags(
     factory.connect_unbind(|_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         if let Some(container) = item.child().and_downcast::<gtk::Box>() {
-            // Hide upstream and tag chips on unbind (don't remove them)
             let mut child = container.first_child();
             while let Some(widget) = child {
-                if widget.widget_name() == "upstream-chip" || widget.widget_name() == "tag-chip" {
+                let name = widget.widget_name();
+                if name == "branch-chip" || name == "upstream-chip" || name == "tag-chip" {
                     widget.set_visible(false);
                 }
                 child = widget.next_sibling();
