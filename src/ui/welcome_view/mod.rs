@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::window::recent_repos::{self, RecentRepo};
+use super::window::recent_repos::{self, RecentRepo};
 
 /// Callback type for when a recent repository is clicked
 /// Receives (sandbox_path, real_path)

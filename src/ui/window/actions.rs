@@ -2,11 +2,11 @@ use adw::prelude::AdwDialogExt;
 use gio::ActionEntry;
 use gtk::{gio, glib, prelude::*};
 
+use super::build_ui_for_new_window;
 use super::repo;
 use super::search;
 use super::state::AppState;
 use super::ui::WindowUi;
-use crate::window::build_ui_for_new_window;
 use crate::{APP_ID, DEVELOPER_NAME};
 
 pub fn setup_shortcuts(app: &adw::Application) {

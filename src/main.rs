@@ -2,7 +2,6 @@ mod git;
 mod logger;
 mod search;
 mod ui;
-mod window;
 
 use adw;
 use gtk::gdk;
@@ -71,15 +70,15 @@ fn main() -> glib::ExitCode {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
-        window::setup_shortcuts(app);
-        window::setup_app_action(app);
+        ui::setup_shortcuts(app);
+        ui::setup_app_action(app);
     });
 
     let repo_arg_for_activate = repo_arg.clone();
     app.connect_activate(move |app| {
         // Only load from command-line args on the first window (initial launch)
         let is_first_window = app.windows().is_empty();
-        window::build_ui(
+        ui::build_ui(
             app,
             if is_first_window {
                 repo_arg_for_activate.as_ref()
