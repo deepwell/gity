@@ -237,41 +237,37 @@ fn clear_metadata_skeleton(label: &gtk::Label, message_label: &gtk::Label) {
     message_label.remove_css_class("skeleton");
 }
 
-fn diff_has_any_collapsed_file(diff_files_box: &gtk::Box) -> Option<bool> {
-    // Returns:
-    // - None: there are no file expanders (no diff loaded / placeholder)
-    // - Some(true): at least one expander exists and is collapsed
-    // - Some(false): at least one expander exists and all are expanded
-    let mut saw_any = false;
+/// Returns `(any_expanded, any_collapsed)` across all file expanders.
+/// Both are `false` when there are no expanders (no diff loaded / placeholder).
+fn diff_expander_state(diff_files_box: &gtk::Box) -> (bool, bool) {
+    let mut any_expanded = false;
+    let mut any_collapsed = false;
     let mut child = diff_files_box.first_child();
     while let Some(w) = child {
         let next = w.next_sibling();
         if let Ok(expander) = w.downcast::<gtk::Expander>() {
-            saw_any = true;
-            if !expander.is_expanded() {
-                return Some(true);
+            if expander.is_expanded() {
+                any_expanded = true;
+            } else {
+                any_collapsed = true;
+            }
+            if any_expanded && any_collapsed {
+                break;
             }
         }
         child = next;
     }
-    if saw_any { Some(false) } else { None }
+    (any_expanded, any_collapsed)
 }
 
-fn update_expand_toggle_button(diff_files_box: &gtk::Box, toggle_button: &gtk::Button) {
-    match diff_has_any_collapsed_file(diff_files_box) {
-        None => {
-            toggle_button.set_sensitive(false);
-            toggle_button.set_label("Expand all");
-        }
-        Some(any_collapsed) => {
-            toggle_button.set_sensitive(true);
-            if any_collapsed {
-                toggle_button.set_label("Expand all");
-            } else {
-                toggle_button.set_label("Collapse all");
-            }
-        }
-    }
+fn update_expand_collapse_buttons(
+    diff_files_box: &gtk::Box,
+    expand_button: &gtk::Button,
+    collapse_button: &gtk::Button,
+) {
+    let (any_expanded, any_collapsed) = diff_expander_state(diff_files_box);
+    expand_button.set_sensitive(any_collapsed);
+    collapse_button.set_sensitive(any_expanded);
 }
 
 fn set_all_file_expanders(diff_files_box: &gtk::Box, expanded: bool) {
@@ -870,7 +866,8 @@ fn build_file_expander_lazy(
 fn poll_diff_result(
     rx: mpsc::Receiver<Result<String, git2::Error>>,
     diff_files_box: gtk::Box,
-    toggle_button: gtk::Button,
+    expand_button: gtk::Button,
+    collapse_button: gtk::Button,
 ) {
     match rx.try_recv() {
         Ok(Ok(diff)) => {
@@ -879,7 +876,7 @@ fn poll_diff_result(
 
             if sections.is_empty() {
                 set_placeholder(&diff_files_box, "");
-                update_expand_toggle_button(&diff_files_box, &toggle_button);
+                update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
                 return;
             }
 
@@ -908,32 +905,42 @@ fn poll_diff_result(
                 // Expand only the first file by default to keep huge diffs responsive.
                 let expanded = idx < DEFAULT_EXPANDED_FILES;
                 let expander = build_file_expander_lazy(prepared, expanded, global_gutter_chars);
-                // Keep the toggle button label in sync if the user expands/collapses individual files.
                 let diff_files_box_for_notify = diff_files_box.clone();
-                let toggle_for_notify = toggle_button.clone();
+                let expand_for_notify = expand_button.clone();
+                let collapse_for_notify = collapse_button.clone();
                 expander.connect_expanded_notify(move |_| {
-                    update_expand_toggle_button(&diff_files_box_for_notify, &toggle_for_notify);
+                    update_expand_collapse_buttons(
+                        &diff_files_box_for_notify,
+                        &expand_for_notify,
+                        &collapse_for_notify,
+                    );
                 });
                 diff_files_box.append(&expander);
             }
 
-            update_expand_toggle_button(&diff_files_box, &toggle_button);
+            update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
         }
         Ok(Err(e)) => {
             let error_msg = format!("Error loading diff: {}", e);
             set_placeholder(&diff_files_box, &error_msg);
-            update_expand_toggle_button(&diff_files_box, &toggle_button);
+            update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
         }
         Err(mpsc::TryRecvError::Empty) => {
             let diff_files_box_clone = diff_files_box.clone();
-            let toggle_btn_clone = toggle_button.clone();
+            let expand_btn_clone = expand_button.clone();
+            let collapse_btn_clone = collapse_button.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
-                poll_diff_result(rx, diff_files_box_clone, toggle_btn_clone);
+                poll_diff_result(
+                    rx,
+                    diff_files_box_clone,
+                    expand_btn_clone,
+                    collapse_btn_clone,
+                );
             });
         }
         Err(_) => {
             set_placeholder(&diff_files_box, "Error: channel closed");
-            update_expand_toggle_button(&diff_files_box, &toggle_button);
+            update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
         }
     }
 }
@@ -1015,14 +1022,16 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
         set_metadata_skeleton(&ui.repo_view.diff_label, &ui.repo_view.commit_message_label);
         ui.repo_view.expand_label.set_visible(false);
         *ui.repo_view.is_expanded.borrow_mut() = false;
-        update_expand_toggle_button(
+        update_expand_collapse_buttons(
             &ui.repo_view.diff_files_box,
-            &ui.repo_view.diff_expand_toggle_button,
+            &ui.repo_view.diff_expand_all_button,
+            &ui.repo_view.diff_collapse_all_button,
         );
 
         // Load diff in background thread
         let diff_files_box_clone = ui.repo_view.diff_files_box.clone();
-        let toggle_btn = ui.repo_view.diff_expand_toggle_button.clone();
+        let expand_btn = ui.repo_view.diff_expand_all_button.clone();
+        let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
         let path_clone = path.clone();
         let sha_clone = commit_sha.to_string();
         let (tx, rx) = mpsc::channel();
@@ -1030,7 +1039,7 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
             let diff_result = git::get_commit_diff(path_clone.to_str().unwrap(), &sha_clone);
             let _ = tx.send(diff_result);
         });
-        poll_diff_result(rx, diff_files_box_clone, toggle_btn);
+        poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
 
         // Load metadata in background thread
         let diff_label_clone = ui.repo_view.diff_label.clone();
@@ -1061,16 +1070,28 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
 
 pub fn connect(ui: &WindowUi, state: &AppState) {
     // Wire diff header controls
-    let diff_files_box_for_toggle = ui.repo_view.diff_files_box.clone();
-    let toggle_for_click = ui.repo_view.diff_expand_toggle_button.clone();
-    ui.repo_view
-        .diff_expand_toggle_button
-        .connect_clicked(move |_| {
-            let any_collapsed =
-                diff_has_any_collapsed_file(&diff_files_box_for_toggle).unwrap_or(true);
-            set_all_file_expanders(&diff_files_box_for_toggle, any_collapsed);
-            update_expand_toggle_button(&diff_files_box_for_toggle, &toggle_for_click);
-        });
+    {
+        let diff_files_box = ui.repo_view.diff_files_box.clone();
+        let expand_btn = ui.repo_view.diff_expand_all_button.clone();
+        let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
+        ui.repo_view
+            .diff_expand_all_button
+            .connect_clicked(move |_| {
+                set_all_file_expanders(&diff_files_box, true);
+                update_expand_collapse_buttons(&diff_files_box, &expand_btn, &collapse_btn);
+            });
+    }
+    {
+        let diff_files_box = ui.repo_view.diff_files_box.clone();
+        let expand_btn = ui.repo_view.diff_expand_all_button.clone();
+        let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
+        ui.repo_view
+            .diff_collapse_all_button
+            .connect_clicked(move |_| {
+                set_all_file_expanders(&diff_files_box, false);
+                update_expand_collapse_buttons(&diff_files_box, &expand_btn, &collapse_btn);
+            });
+    }
 
     // Refresh diff colors when theme changes (light/dark mode switch)
     let diff_files_box_for_theme = ui.repo_view.diff_files_box.clone();

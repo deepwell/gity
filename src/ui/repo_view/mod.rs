@@ -28,7 +28,8 @@ pub struct RepoView {
     // Diff UI
     pub diff_files_box: gtk::Box,
     pub diff_label: gtk::Label,
-    pub diff_expand_toggle_button: gtk::Button,
+    pub diff_expand_all_button: gtk::Button,
+    pub diff_collapse_all_button: gtk::Button,
     pub commit_message_label: gtk::Label,
     pub expand_label: gtk::Label,
     pub full_message: Rc<RefCell<String>>,
@@ -64,8 +65,8 @@ impl RepoView {
         self.expand_label.set_visible(false);
         *self.full_message.borrow_mut() = String::new();
         *self.is_expanded.borrow_mut() = false;
-        self.diff_expand_toggle_button.set_sensitive(false);
-        self.diff_expand_toggle_button.set_label("Expand all");
+        self.diff_expand_all_button.set_sensitive(false);
+        self.diff_collapse_all_button.set_sensitive(false);
     }
 
     /// Builds the full repo screen (search bar + branch/commit panels + diff view).
@@ -179,12 +180,19 @@ impl RepoView {
         diff_label.set_xalign(0.0);
 
         // Diff header controls
-        let diff_expand_toggle_button = gtk::Button::builder()
+        let diff_expand_all_button = gtk::Button::builder()
             .label("Expand all")
-            .tooltip_text("Expand/collapse all file diffs")
+            .tooltip_text("Expand all file diffs")
             .build();
-        diff_expand_toggle_button.add_css_class("flat");
-        diff_expand_toggle_button.set_sensitive(false);
+        diff_expand_all_button.add_css_class("flat");
+        diff_expand_all_button.set_sensitive(false);
+
+        let diff_collapse_all_button = gtk::Button::builder()
+            .label("Collapse all")
+            .tooltip_text("Collapse all file diffs")
+            .build();
+        diff_collapse_all_button.add_css_class("flat");
+        diff_collapse_all_button.set_sensitive(false);
 
         let diff_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -195,7 +203,8 @@ impl RepoView {
             .spacing(8)
             .build();
         diff_header.append(&diff_label);
-        diff_header.append(&diff_expand_toggle_button);
+        diff_header.append(&diff_expand_all_button);
+        diff_header.append(&diff_collapse_all_button);
 
         let commit_message_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -301,7 +310,8 @@ impl RepoView {
             commit_paging_state,
             diff_files_box,
             diff_label,
-            diff_expand_toggle_button,
+            diff_expand_all_button,
+            diff_collapse_all_button,
             commit_message_label,
             expand_label,
             full_message,
