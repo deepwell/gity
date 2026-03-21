@@ -40,6 +40,34 @@ pub struct RepoView {
 }
 
 impl RepoView {
+    /// Reset the diff panel to its empty state.
+    ///
+    /// Clears all diff file widgets, resets metadata labels, and disables the
+    /// expand/collapse toggle. If `placeholder` is provided, a label with that
+    /// text is shown in the cleared diff area.
+    pub fn reset_diff(&self, placeholder: Option<&str>) {
+        while let Some(child) = self.diff_files_box.first_child() {
+            self.diff_files_box.remove(&child);
+        }
+        if let Some(text) = placeholder {
+            self.diff_files_box.append(
+                &gtk::Label::builder()
+                    .label(text)
+                    .halign(gtk::Align::Start)
+                    .wrap(true)
+                    .build(),
+            );
+        }
+
+        self.diff_label.set_text("Commit Diff");
+        self.commit_message_label.set_text("");
+        self.expand_label.set_visible(false);
+        *self.full_message.borrow_mut() = String::new();
+        *self.is_expanded.borrow_mut() = false;
+        self.diff_expand_toggle_button.set_sensitive(false);
+        self.diff_expand_toggle_button.set_label("Expand all");
+    }
+
     /// Builds the full repo screen (search bar + branch/commit panels + diff view).
     ///
     /// The `window` is only used for a couple of UX touches (entry width sizing).

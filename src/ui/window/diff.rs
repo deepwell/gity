@@ -1055,15 +1055,7 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
             is_expanded_clone,
         );
     } else {
-        set_placeholder(&ui.repo_view.diff_files_box, "No repository loaded");
-        ui.repo_view.diff_label.set_text("Commit Diff");
-        ui.repo_view.commit_message_label.set_text("");
-        ui.repo_view.expand_label.set_visible(false);
-        *ui.repo_view.is_expanded.borrow_mut() = false;
-        update_expand_toggle_button(
-            &ui.repo_view.diff_files_box,
-            &ui.repo_view.diff_expand_toggle_button,
-        );
+        ui.repo_view.reset_diff(Some("No repository loaded"));
     }
 }
 
@@ -1101,18 +1093,7 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
                     load_commit_diff(&ui_for_selection, &state_for_selection, &commit_sha);
                 }
             } else {
-                set_placeholder(&ui_for_selection.repo_view.diff_files_box, "");
-                ui_for_selection
-                    .repo_view
-                    .diff_label
-                    .set_text("Commit Diff");
-                ui_for_selection.repo_view.commit_message_label.set_text("");
-                ui_for_selection.repo_view.expand_label.set_visible(false);
-                *ui_for_selection.repo_view.is_expanded.borrow_mut() = false;
-                update_expand_toggle_button(
-                    &ui_for_selection.repo_view.diff_files_box,
-                    &ui_for_selection.repo_view.diff_expand_toggle_button,
-                );
+                ui_for_selection.repo_view.reset_diff(None);
             }
         });
 }

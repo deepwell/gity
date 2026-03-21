@@ -380,14 +380,7 @@ pub fn refresh_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     if let Some(path) = path_opt {
         // Clear diff UI before refreshing to avoid showing stale data
         // from the old commit list (especially important after commit amend)
-        while let Some(child) = ui.repo_view.diff_files_box.first_child() {
-            ui.repo_view.diff_files_box.remove(&child);
-        }
-        ui.repo_view.diff_label.set_text("Commit Diff");
-        ui.repo_view.commit_message_label.set_text("");
-        ui.repo_view.expand_label.set_visible(false);
-        *ui.repo_view.full_message.borrow_mut() = String::new();
-        *ui.repo_view.is_expanded.borrow_mut() = false;
+        ui.repo_view.reset_diff(None);
 
         let started_at = Instant::now();
         ui.repo_view
@@ -415,22 +408,7 @@ pub fn close_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     ui.repo_view.search_status_label.set_text("");
     ui.repo_view.last_search_status.borrow_mut().clear();
 
-    // Reset diff UI
-    while let Some(child) = ui.repo_view.diff_files_box.first_child() {
-        ui.repo_view.diff_files_box.remove(&child);
-    }
-    ui.repo_view.diff_files_box.append(
-        &gtk::Label::builder()
-            .label("No repository loaded")
-            .halign(gtk::Align::Start)
-            .wrap(true)
-            .build(),
-    );
-    ui.repo_view.diff_label.set_text("Commit Diff");
-    ui.repo_view.commit_message_label.set_text("");
-    ui.repo_view.expand_label.set_visible(false);
-    *ui.repo_view.full_message.borrow_mut() = String::new();
-    *ui.repo_view.is_expanded.borrow_mut() = false;
+    ui.repo_view.reset_diff(Some("No repository loaded"));
 
     // Switch back to welcome screen and hide repo-only controls
     ui.set_repo_controls_visible(false);
@@ -452,15 +430,7 @@ pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
     ui.repo_view.search_status_label.set_text("");
     ui.repo_view.last_search_status.borrow_mut().clear();
 
-    // Reset diff UI.
-    while let Some(child) = ui.repo_view.diff_files_box.first_child() {
-        ui.repo_view.diff_files_box.remove(&child);
-    }
-    ui.repo_view.diff_label.set_text("Commit Diff");
-    ui.repo_view.commit_message_label.set_text("");
-    ui.repo_view.expand_label.set_visible(false);
-    *ui.repo_view.full_message.borrow_mut() = String::new();
-    *ui.repo_view.is_expanded.borrow_mut() = false;
+    ui.repo_view.reset_diff(None);
 }
 
 pub fn maybe_load_repo_from_cwd(
