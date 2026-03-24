@@ -46,6 +46,15 @@
   </screenshots>
 
   <releases>
+    <release version="0.5.2" date="2026-03-23">
+      <description>
+        <ul>
+          <li>Show a chip when the current branch has diverged from main/master and is not ahead of it</li>
+          <li>Display both expand-all and collapse-all buttons</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="0.5.1" date="2026-02-01">
       <description>
         <ul>
