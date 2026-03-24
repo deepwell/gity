@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 
 const MAX_RECENT_REPOS: usize = 12;
 
+fn strip_trailing_slash(s: &str) -> &str {
+    s.strip_suffix('/').unwrap_or(s)
+}
+
 /// Stored repository entry with both real and sandbox paths
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RecentRepoEntry {
@@ -86,8 +90,8 @@ pub fn add_recent_repo(sandbox_path: &PathBuf, real_path: &PathBuf) {
     let mut entries: Vec<RecentRepoEntry> =
         serde_json::from_str(&json_str).unwrap_or_else(|_| Vec::new());
 
-    let sandbox_str = sandbox_path.to_string_lossy().to_string();
-    let real_str = real_path.to_string_lossy().to_string();
+    let sandbox_str = strip_trailing_slash(&sandbox_path.to_string_lossy()).to_string();
+    let real_str = strip_trailing_slash(&real_path.to_string_lossy()).to_string();
 
     // Remove this entry if it exists (to move it to front)
     entries.retain(|e| e.sandbox_path != sandbox_str);
