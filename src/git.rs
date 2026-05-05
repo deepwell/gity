@@ -315,10 +315,12 @@ fn match_with_parent(
 }
 
 fn format_datetime(time: &Time) -> String {
-    let dt = Utc
-        .timestamp_opt(time.seconds() + (time.offset_minutes() as i64) * 60, 0)
-        .unwrap();
+    let dt = Local.timestamp_opt(time.seconds(), 0).unwrap();
     dt.format("%b %d, %Y %H:%M").to_string()
+}
+
+fn git_time_to_utc(time: Time) -> DateTime<Utc> {
+    Utc.timestamp_opt(time.seconds(), 0).unwrap()
 }
 
 #[derive(Clone)]
@@ -337,10 +339,7 @@ pub fn get_local_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
         if let Some(name) = branch.name()? {
             // Get latest commit time for this branch
             if let Ok(commit) = branch.get().peel_to_commit() {
-                let time = commit.time();
-                let commit_time = Utc
-                    .timestamp_opt(time.seconds() + (time.offset_minutes() as i64) * 60, 0)
-                    .unwrap();
+                let commit_time = git_time_to_utc(commit.time());
 
                 branch_infos.push(BranchInfo {
                     name: name.to_string(),
@@ -382,10 +381,7 @@ pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
         // Resolve the tag to its target commit and get commit time
         if let Ok(obj) = repo.find_object(oid, None) {
             if let Ok(commit) = obj.peel_to_commit() {
-                let time = commit.time();
-                let commit_time = Utc
-                    .timestamp_opt(time.seconds() + (time.offset_minutes() as i64) * 60, 0)
-                    .unwrap();
+                let commit_time = git_time_to_utc(commit.time());
 
                 tag_infos.push(TagInfo { name, commit_time });
             }
@@ -612,4 +608,30 @@ pub fn get_tags(path: &Path) -> Result<std::collections::HashMap<String, Vec<Str
     Logger::info(&format!("Found {} tags in ({})", tag_count, path.display()));
 
     Ok(tag_map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_display_time_uses_viewer_local_timezone_not_author_offset() {
+        let same_instant_utc = Time::new(1_700_000_000, 0);
+        let same_instant_plus_five = Time::new(1_700_000_000, 300);
+
+        assert_eq!(
+            format_datetime(&same_instant_utc),
+            format_datetime(&same_instant_plus_five)
+        );
+    }
+
+    #[test]
+    fn commit_instants_ignore_stored_author_offset() {
+        let time = Time::new(1_700_000_000, -420);
+
+        assert_eq!(
+            git_time_to_utc(time),
+            Utc.timestamp_opt(1_700_000_000, 0).unwrap()
+        );
+    }
 }
