@@ -1,38 +1,5 @@
 project('gity', 'rust',
-  version: run_command(
-    'python3',
-    [
-      '-c',
-      '''
-import pathlib
-import sys
-
-lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-
-# Extract version from the [package] section only (avoid matching dependency versions).
-in_package = False
-for raw in lines:
-    s = raw.strip()
-    if not s or s.startswith('#'):
-        continue
-    if s.startswith('[') and s.endswith(']'):
-        in_package = (s == '[package]')
-        continue
-    if in_package:
-        key, sep, val = s.partition('=')
-        if sep and key.strip() == 'version':
-            v = val.strip().strip('"').strip("'")
-            if not v:
-                raise SystemExit('Cargo.toml package version is empty')
-            print(v)
-            raise SystemExit(0)
-
-raise SystemExit('Cargo.toml missing package version in [package] section')
-''',
-      meson.current_source_dir() / 'Cargo.toml',
-    ],
-    check: true,
-  ).stdout().strip(),
+  version: '2026.1',
   license: 'GPL-3.0-or-later',
   meson_version: '>= 1.0.0',
 )
