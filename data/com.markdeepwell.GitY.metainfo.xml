@@ -46,6 +46,14 @@
   </screenshots>
 
   <releases>
+    <release version="2026.2" date="2026-05-09">
+      <description>
+        <ul>
+          <li>Correctly display the new calendar versioning number</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="2026.1" date="2026-05-09">
       <description>
         <ul>
