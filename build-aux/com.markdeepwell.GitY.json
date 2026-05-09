@@ -1,7 +1,7 @@
 {
   "app-id": "com.markdeepwell.GitY",
   "runtime": "org.gnome.Platform",
-  "runtime-version": "49",
+  "runtime-version": "50",
   "sdk": "org.gnome.Sdk",
   "command": "gity",
   "sdk-extensions": [
@@ -24,10 +24,10 @@
   },
   "modules": [
     {
-      "name" : "gity",
-      "builddir" : true,
-      "buildsystem" : "meson",
-      "config-opts" : [
+      "name": "gity",
+      "buildsystem": "meson",
+      "builddir": true,
+      "config-opts": [
         "-Dbuildtype=debug"
       ],
       "sources": [
