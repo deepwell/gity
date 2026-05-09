@@ -16,6 +16,14 @@ View branches, commit diffs, and search through all commit messages.
 sudo dnf install -y gcc rust rustfmt rust-analyzer cargo gtk4-devel openssl-devel libadwaita-devel meson ninja-build gtksourceview5-devel
 ```
 
+### Code Linting
+
+This repository uses [hk](https://github.com/jdx/hk) for pre-commit checks.
+
+Install hk (for example `cargo install hk` or your package manager), then either enable hooks (`hk install` from the repo root). Put the same `hk` binary on your `PATH` when Git runs hooks (built-in whitespace and EOF steps shell out to `hk util`), for example by adding `~/.cargo/bin` to your PATH or using a distro package.
+
+Run the same checks without committing using `hk check` (or `hk check --all` for the whole tree). Apply auto-fixes with `hk fix`.
+
 ## Building
 
 ### Development Build and Run
