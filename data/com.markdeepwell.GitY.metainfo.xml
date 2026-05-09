@@ -6,10 +6,10 @@
   <summary>View and search full Git history</summary>
   <description>
     <p>
-      A simple and fast Git repository browser to view Git branches and commit diffs.
+      A simple and fast Git repository browser to view Git branches, tags, and commit diffs.
     </p>
     <ul>
-      <li>View all branches and commits for local Git repositories</li>
+      <li>View all branches, tags, and commits for local Git repositories</li>
       <li>Search by commit message or Git SHA</li>
       <li>Coloured Git diff viewer</li>
       <li>Remembers recently opened Git repositories</li>
@@ -46,6 +46,18 @@
   </screenshots>
 
   <releases>
+    <release version="2026.1" date="2026-05-09">
+      <description>
+        <ul>
+          <li>Switch to Calendar Versioning: Year and release version</li>
+          <li>Fix unwanted scrolling in the diff view when selecting text</li>
+          <li>Keep the same commit selected after a refresh when possible</li>
+          <li>Show commit dates and times in the user&apos;s local timezone</li>
+          <li>Update dependencies</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="0.5.2" date="2026-03-23">
       <description>
         <ul>
