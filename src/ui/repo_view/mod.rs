@@ -167,7 +167,16 @@ impl RepoView {
         let diff_scrolled_window = gtk::ScrolledWindow::builder()
             .min_content_height(200)
             .build();
-        diff_scrolled_window.set_child(Some(&diff_files_box));
+        // Wrap in an explicit Viewport with scroll-to-focus disabled. Otherwise, when a
+        // user clicks inside a per-file SourceView (which can be taller than the visible
+        // diff area), the auto-created Viewport would scroll to bring the focused
+        // SourceView into view, yanking the click position off-screen and making it
+        // hard to click/select text in long diffs.
+        let diff_viewport = gtk::Viewport::builder()
+            .scroll_to_focus(false)
+            .child(&diff_files_box)
+            .build();
+        diff_scrolled_window.set_child(Some(&diff_viewport));
         diff_scrolled_window.set_vexpand(true);
         diff_scrolled_window.set_hexpand(true);
 
