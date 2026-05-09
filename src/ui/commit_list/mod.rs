@@ -20,6 +20,12 @@ use crate::ui::{Entry, GridCell};
 /// Number of commits to load per page during infinite scroll.
 const COMMIT_PAGE_SIZE: usize = 200;
 
+/// Maximum number of pages to auto-load while searching for a pending
+/// selection SHA (e.g. after a refresh). At `COMMIT_PAGE_SIZE` per page,
+/// this caps the search to roughly 50 * 200 = 10,000 commits before we
+/// fall back to selecting the first commit.
+const MAX_PENDING_SELECT_PAGES: u32 = 50;
+
 // =============================================================================
 // Public types
 // =============================================================================
@@ -48,6 +54,14 @@ pub struct CommitPagingState {
     pub result_source: Option<glib::SourceId>,
     /// Optional performance logging for first page load.
     pub pending_first_page_log: Option<(Instant, PathBuf, String)>,
+    /// SHA of a commit to select once it appears in the loaded commits.
+    /// Used to preserve the user's selection across a refresh; pages are
+    /// auto-loaded (without waiting for scroll) until the SHA is found,
+    /// the worker reports done, or the auto-load cap is reached.
+    pub pending_select_sha: Option<String>,
+    /// Number of pages auto-loaded so far while searching for
+    /// `pending_select_sha`. Bounded by `MAX_PENDING_SELECT_PAGES`.
+    pub pending_select_pages_loaded: u32,
 }
 
 /// A scrollable list widget displaying git commits with infinite scroll support.
@@ -136,21 +150,27 @@ impl CommitList {
     /// # Arguments
     /// * `path` - Path to the git repository
     /// * `branch_ref` - Branch reference to load commits from
+    /// * `initial_selection_sha` - Optional SHA to select once it appears in
+    ///   the loaded commits (used to preserve selection across a refresh).
+    ///   If `None`, the first commit is auto-selected on first page.
     /// * `on_first_page_branch` - Callback invoked with the branch name when the first page loads
     pub fn load_commits(
         &self,
         path: PathBuf,
         branch_ref: String,
+        initial_selection_sha: Option<String>,
         on_first_page_branch: impl Fn(String) + 'static,
     ) {
         let on_first_page_branch: Rc<dyn Fn(String)> = Rc::new(on_first_page_branch);
         start_commit_paging(
+            &self.widget,
             &self.store,
             &self.selection_model,
             &self.paging_state,
             &self.generation_counter,
             path,
             branch_ref,
+            initial_selection_sha,
             on_first_page_branch,
         );
     }
@@ -194,6 +214,14 @@ impl CommitList {
         }
     }
 
+    /// Return the SHA of the currently selected commit, if any.
+    pub fn selected_commit_sha(&self) -> Option<String> {
+        let item = self.selection_model.selected_item()?;
+        let boxed = item.downcast::<glib::BoxedAnyObject>().ok()?;
+        let commit: Ref<GitCommit> = boxed.borrow();
+        Some(commit.id.clone())
+    }
+
     /// Clear all commits and stop any in-flight loading.
     pub fn clear(&self) {
         // Invalidate any in-flight paging generation and stop the worker.
@@ -210,6 +238,8 @@ impl CommitList {
             st.is_loading = false;
             st.done = true;
             st.pending_first_page_log = None;
+            st.pending_select_sha = None;
+            st.pending_select_pages_loaded = 0;
         }
 
         // Clear tags, upstream, and branch head.
@@ -495,10 +525,27 @@ fn setup_infinite_scroll(
         });
 }
 
+/// Find the index of a commit by SHA in the store. Returns `None` if not found.
+fn find_commit_index_by_sha(store: &gio::ListStore, sha: &str) -> Option<u32> {
+    let n = store.n_items();
+    for i in 0..n {
+        let Some(obj) = store.item(i) else { continue };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        let commit: Ref<GitCommit> = boxed.borrow();
+        if commit.id == sha {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Poll for commit page results from the background worker.
 fn poll_commit_pages(
     rx: mpsc::Receiver<CommitLoadResponse>,
     expected_generation: u64,
+    scrolled_window: gtk::ScrolledWindow,
     store: gio::ListStore,
     selection_model: gtk::SingleSelection,
     paging_state: Rc<std::cell::RefCell<CommitPagingState>>,
@@ -538,11 +585,31 @@ fn poll_commit_pages(
                     st.done = done;
                 }
 
+                // Try to honor any pending selection SHA before the default
+                // "select first commit on first page" behavior. This is what
+                // preserves the user's selected commit across a refresh.
+                let had_pending_target = paging_state.borrow().pending_select_sha.is_some();
+                let mut found_pending_target = false;
+                let pending_sha = paging_state.borrow().pending_select_sha.clone();
+                if let Some(sha) = pending_sha {
+                    if let Some(idx) = find_commit_index_by_sha(&store, &sha) {
+                        selection_model.select_item(idx, true);
+                        crate::search::SearchHandler::scroll_to_item(
+                            &scrolled_window,
+                            &selection_model,
+                            idx,
+                        );
+                        paging_state.borrow_mut().pending_select_sha = None;
+                        found_pending_target = true;
+                    }
+                }
+
                 if is_first_page {
                     (on_first_page_branch)(branch_name);
 
-                    // Auto-select first commit (triggers diff load).
-                    if store.n_items() > 0 {
+                    // Only auto-select the first commit when no target SHA
+                    // was requested (or it was already found above).
+                    if !had_pending_target && store.n_items() > 0 {
                         selection_model.select_item(0, true);
                     }
 
@@ -557,6 +624,33 @@ fn poll_commit_pages(
                                 repo_path.display()
                             ));
                         });
+                    }
+                }
+
+                // If a target was pending and we still haven't found it,
+                // either auto-load the next page or fall back to selecting
+                // the first commit if we've exhausted our budget.
+                if had_pending_target && !found_pending_target {
+                    let mut st = paging_state.borrow_mut();
+                    if st.pending_select_sha.is_some() {
+                        st.pending_select_pages_loaded =
+                            st.pending_select_pages_loaded.saturating_add(1);
+                        let exhausted =
+                            st.done || st.pending_select_pages_loaded >= MAX_PENDING_SELECT_PAGES;
+                        if exhausted {
+                            st.pending_select_sha = None;
+                            drop(st);
+                            if selection_model.selected() == gtk::INVALID_LIST_POSITION
+                                && store.n_items() > 0
+                            {
+                                selection_model.select_item(0, true);
+                            }
+                        } else if !st.is_loading {
+                            if let Some(tx) = st.request_tx.clone() {
+                                st.is_loading = true;
+                                let _ = tx.send(CommitLoadRequest::NextPage);
+                            }
+                        }
                     }
                 }
             }
@@ -583,6 +677,7 @@ fn poll_commit_pages(
     }
 
     // Schedule the next poll.
+    let scrolled_window_clone = scrolled_window.clone();
     let store_clone = store.clone();
     let selection_model_clone = selection_model.clone();
     let paging_state_clone = paging_state.clone();
@@ -592,6 +687,7 @@ fn poll_commit_pages(
         poll_commit_pages(
             rx,
             expected_generation,
+            scrolled_window_clone,
             store_clone,
             selection_model_clone,
             paging_state_clone,
@@ -603,13 +699,16 @@ fn poll_commit_pages(
 }
 
 /// Start the commit paging process for a repository.
+#[allow(clippy::too_many_arguments)]
 fn start_commit_paging(
+    scrolled_window: &gtk::ScrolledWindow,
     store: &gio::ListStore,
     selection_model: &gtk::SingleSelection,
     paging_state: &Rc<std::cell::RefCell<CommitPagingState>>,
     generation_counter: &Arc<AtomicU64>,
     path: PathBuf,
     branch_ref: String,
+    initial_selection_sha: Option<String>,
     on_first_page_branch: Rc<dyn Fn(String)>,
 ) {
     // Clear existing items + cancel any in-flight worker.
@@ -625,6 +724,8 @@ fn start_commit_paging(
         }
         st.is_loading = false;
         st.done = false;
+        st.pending_select_sha = initial_selection_sha;
+        st.pending_select_pages_loaded = 0;
     }
 
     // New generation for this load.
@@ -645,6 +746,7 @@ fn start_commit_paging(
     poll_commit_pages(
         res_rx,
         expected_generation,
+        scrolled_window.clone(),
         store.clone(),
         selection_model.clone(),
         paging_state.clone(),

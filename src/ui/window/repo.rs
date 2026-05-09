@@ -30,6 +30,20 @@ pub fn load_repo(
     path: PathBuf,
     ref_name: Option<String>,
 ) {
+    load_repo_with_selection(ui, state, app_name, path, ref_name, None);
+}
+
+/// Like `load_repo`, but additionally requests that the commit with the given
+/// SHA be selected once it appears in the loaded commits. This is used by
+/// `refresh_repo` to preserve the user's selected commit across a refresh.
+pub fn load_repo_with_selection(
+    ui: &WindowUi,
+    state: &AppState,
+    app_name: &str,
+    path: PathBuf,
+    ref_name: Option<String>,
+    initial_selection_sha: Option<String>,
+) {
     if let Err(e) = git::validate_repository(&path) {
         Logger::error(&format!("Failed to open repository: {}", e));
         close_repo(ui, state, app_name);
@@ -86,14 +100,17 @@ pub fn load_repo(
         .commit_list
         .set_branch_head(git::get_main_branch_head(&path, &effective_ref));
 
-    ui.repo_view
-        .commit_list
-        .load_commits(path.clone(), effective_ref.clone(), {
+    ui.repo_view.commit_list.load_commits(
+        path.clone(),
+        effective_ref.clone(),
+        initial_selection_sha,
+        {
             let current_ref = state.current_ref.clone();
             move |ref_name| {
                 *current_ref.borrow_mut() = Some(ref_name);
             }
-        });
+        },
+    );
 
     // Load branches and tags for the branch panel
     let branches = match git::get_local_branches(path.to_str().unwrap()) {
@@ -144,7 +161,7 @@ pub fn switch_ref(ui: &WindowUi, state: &AppState, ref_name: &str, ref_type: Ref
         .set_branch_head(git::get_main_branch_head(&path, ref_name));
     ui.repo_view
         .commit_list
-        .load_commits(path, ref_name.to_string(), {
+        .load_commits(path, ref_name.to_string(), None, {
             let current_ref = state.current_ref.clone();
             move |ref_name| {
                 *current_ref.borrow_mut() = Some(ref_name);
@@ -378,6 +395,10 @@ pub fn refresh_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     let path_opt = state.current_path.borrow().clone();
     let ref_opt = state.current_ref.borrow().clone();
     if let Some(path) = path_opt {
+        // Capture the currently selected commit SHA so we can keep it
+        // focused across the refresh (if it still exists on the ref).
+        let selected_sha = ui.repo_view.commit_list.selected_commit_sha();
+
         // Clear diff UI before refreshing to avoid showing stale data
         // from the old commit list (especially important after commit amend)
         ui.repo_view.reset_diff(None);
@@ -391,7 +412,7 @@ pub fn refresh_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
             path.clone(),
             "Refresh repo load -> rendered on screen".to_string(),
         ));
-        load_repo(ui, state, app_name, path, ref_opt);
+        load_repo_with_selection(ui, state, app_name, path, ref_opt, selected_sha);
     }
 }
 
