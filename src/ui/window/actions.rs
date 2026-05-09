@@ -129,9 +129,9 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
                 .application_icon(APP_ID)
                 .developer_name(DEVELOPER_NAME)
                 .version(if cfg!(debug_assertions) {
-                    concat!(env!("CARGO_PKG_VERSION"), "-Devel")
+                    format!("{}-Devel", crate::version::app_version())
                 } else {
-                    env!("CARGO_PKG_VERSION")
+                    crate::version::app_version().to_string()
                 })
                 .website("https://github.com/deepwell/gity")
                 .issue_url("https://github.com/deepwell/gity/issues")

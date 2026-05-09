@@ -1,6 +1,12 @@
 use std::process::Command;
 
 fn main() {
+    let app_version = std::env::var("MESON_PROJECT_VERSION").unwrap_or_else(|_| {
+        std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION must be set for build.rs")
+    });
+    println!("cargo:rustc-env=GITY_APP_VERSION={app_version}");
+    println!("cargo:rerun-if-env-changed=MESON_PROJECT_VERSION");
+
     glib_build_tools::compile_resources(
         &["src/resources"],
         "src/resources/resources.gresource.xml",

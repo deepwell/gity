@@ -106,6 +106,7 @@ cargo_build = custom_target(
   ],
   env: {
     'GSETTINGS_SCHEMA_DIR': '@0@'.format(meson.current_build_dir()),
+    'MESON_PROJECT_VERSION': meson.project_version(),
   },
   console: true,
 )

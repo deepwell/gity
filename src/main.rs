@@ -2,6 +2,7 @@ mod git;
 mod logger;
 mod search;
 mod ui;
+mod version;
 
 use adw;
 use gtk::gdk;
@@ -20,7 +21,7 @@ fn main() -> glib::ExitCode {
         .skip(1)
         .any(|arg| arg == "--version" || arg == "-v")
     {
-        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        println!("{} {}", env!("CARGO_PKG_NAME"), version::app_version());
         return glib::ExitCode::SUCCESS;
     }
 
