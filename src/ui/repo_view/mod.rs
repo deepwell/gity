@@ -6,7 +6,7 @@ use gtk::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::ui::{BranchPanel, CommitList, CommitPagingState};
+use crate::ui::{BranchPanel, CommitList, CommitPagingState, copy_on_hover};
 
 #[derive(Clone)]
 pub struct RepoView {
@@ -27,7 +27,10 @@ pub struct RepoView {
 
     // Diff UI
     pub diff_files_box: gtk::Box,
-    pub diff_label: gtk::Label,
+    pub diff_metadata_label: gtk::Label,
+    pub diff_sha_row: gtk::Box,
+    pub diff_sha_label: gtk::Label,
+    pub diff_sha_copy_text: Rc<RefCell<String>>,
     pub diff_expand_all_button: gtk::Button,
     pub diff_collapse_all_button: gtk::Button,
     pub commit_message_label: gtk::Label,
@@ -60,7 +63,8 @@ impl RepoView {
             );
         }
 
-        self.diff_label.set_text("Commit Diff");
+        self.diff_metadata_label.set_text("Commit Diff");
+        self.diff_sha_row.set_visible(false);
         self.commit_message_label.set_text("");
         self.expand_label.set_visible(false);
         *self.full_message.borrow_mut() = String::new();
@@ -180,13 +184,35 @@ impl RepoView {
         diff_scrolled_window.set_vexpand(true);
         diff_scrolled_window.set_hexpand(true);
 
-        let diff_label = gtk::Label::builder()
+        let diff_metadata_label = gtk::Label::builder()
             .label("Commit Diff")
             .halign(gtk::Align::Start)
             .selectable(true)
             .build();
-        diff_label.set_hexpand(true);
-        diff_label.set_xalign(0.0);
+        diff_metadata_label.set_xalign(0.0);
+
+        let diff_metadata_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .hexpand(true)
+            .build();
+        diff_metadata_box.set_halign(gtk::Align::Start);
+
+        let diff_sha_copy_row = copy_on_hover::CopyOnHoverRow::new(
+            "",
+            String::new(),
+            "Copy commit SHA",
+            "copy-filename-btn",
+            None,
+        );
+        diff_sha_copy_row.reveal_on_hover(&diff_sha_copy_row.widget);
+        let diff_sha_row = diff_sha_copy_row.widget.clone();
+        let diff_sha_label = diff_sha_copy_row.label.clone();
+        let diff_sha_copy_text = diff_sha_copy_row.copy_text.clone();
+        diff_sha_row.set_visible(false);
+
+        diff_metadata_box.append(&diff_metadata_label);
+        diff_metadata_box.append(&diff_sha_row);
 
         // Diff header controls
         let diff_expand_all_button = gtk::Button::builder()
@@ -211,7 +237,7 @@ impl RepoView {
             .margin_bottom(5)
             .spacing(8)
             .build();
-        diff_header.append(&diff_label);
+        diff_header.append(&diff_metadata_box);
         diff_header.append(&diff_expand_all_button);
         diff_header.append(&diff_collapse_all_button);
 
@@ -318,7 +344,10 @@ impl RepoView {
             commit_list,
             commit_paging_state,
             diff_files_box,
-            diff_label,
+            diff_metadata_label,
+            diff_sha_row,
+            diff_sha_label,
+            diff_sha_copy_text,
             diff_expand_all_button,
             diff_collapse_all_button,
             commit_message_label,

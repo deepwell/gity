@@ -5,6 +5,7 @@
 
 pub mod branch_panel;
 pub mod commit_list;
+pub mod copy_on_hover;
 pub mod grid_cell;
 pub mod repo_view;
 pub mod styles;

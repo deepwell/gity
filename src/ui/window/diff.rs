@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use sv::prelude::*;
 
 use crate::git;
+use crate::ui::copy_on_hover;
 
 use super::state::AppState;
 use super::ui::WindowUi;
@@ -129,14 +130,6 @@ fn refresh_diff_colors(diff_files_box: &gtk::Box) {
 //   the expander is opened/closed.
 const DEFAULT_EXPANDED_FILES: usize = 10;
 
-fn copy_text_to_clipboard(text: &str) {
-    // Best-effort: if there's no display (headless/tests), do nothing.
-    let Some(display) = gtk::gdk::Display::default() else {
-        return;
-    };
-    display.clipboard().set_text(text);
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiffLineKind {
     Add,
@@ -219,11 +212,15 @@ fn set_diff_skeleton(container: &gtk::Box) {
 }
 
 /// Shows skeleton loading state for author/metadata label
-fn set_metadata_skeleton(label: &gtk::Label, message_label: &gtk::Label) {
-    // Clear text and use a non-breaking space to maintain height
-    label.set_text("\u{00A0}");
-    label.add_css_class("skeleton");
-    label.set_width_request(400);
+fn set_metadata_skeleton(
+    metadata_label: &gtk::Label,
+    sha_row: &gtk::Box,
+    message_label: &gtk::Label,
+) {
+    metadata_label.set_text("\u{00A0}");
+    metadata_label.add_css_class("skeleton");
+    metadata_label.set_width_request(400);
+    sha_row.set_visible(false);
 
     // Also show skeleton for commit message
     message_label.set_text("\u{00A0}\n\u{00A0}\n\u{00A0}");
@@ -231,9 +228,9 @@ fn set_metadata_skeleton(label: &gtk::Label, message_label: &gtk::Label) {
 }
 
 /// Removes skeleton styling from metadata labels
-fn clear_metadata_skeleton(label: &gtk::Label, message_label: &gtk::Label) {
-    label.remove_css_class("skeleton");
-    label.set_width_request(-1);
+fn clear_metadata_skeleton(metadata_label: &gtk::Label, message_label: &gtk::Label) {
+    metadata_label.remove_css_class("skeleton");
+    metadata_label.set_width_request(-1);
     message_label.remove_css_class("skeleton");
 }
 
@@ -747,88 +744,16 @@ fn build_file_expander_lazy(
 ) -> gtk::Expander {
     let expander = gtk::Expander::builder().expanded(expanded).build();
 
-    // Custom expander label: filename + copy-to-clipboard icon button.
-    let header = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .build();
+    let filename_row = copy_on_hover::CopyOnHoverRow::new(
+        &prepared.label,
+        prepared.label.clone(),
+        "Copy filename",
+        "copy-filename-btn",
+        Some(gtk::pango::EllipsizeMode::Middle),
+    );
+    filename_row.reveal_on_hover(&expander);
+    let header = filename_row.with_trailing_spacer();
     header.set_halign(gtk::Align::Start);
-
-    let filename_label = gtk::Label::builder()
-        .label(&prepared.label)
-        .xalign(0.0)
-        .build();
-    filename_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-
-    // Use a Stack to animate between copy and success icons
-    let copy_icon = gtk::Image::from_icon_name("edit-copy-symbolic");
-    copy_icon.set_pixel_size(14);
-
-    let success_icon = gtk::Image::from_icon_name("object-select-symbolic");
-    success_icon.set_pixel_size(14);
-
-    let icon_stack = gtk::Stack::builder()
-        .transition_type(gtk::StackTransitionType::Crossfade)
-        .transition_duration(200)
-        .build();
-    icon_stack.add_named(&copy_icon, Some("copy"));
-    icon_stack.add_named(&success_icon, Some("success"));
-    icon_stack.set_visible_child_name("copy");
-
-    let copy_button = gtk::Button::builder()
-        .child(&icon_stack)
-        .tooltip_text("Copy filename")
-        .valign(gtk::Align::Center)
-        .build();
-    copy_button.add_css_class("flat");
-    copy_button.add_css_class("copy-filename-btn");
-    copy_button.set_can_focus(false);
-    copy_button.set_width_request(22);
-    copy_button.set_height_request(22);
-
-    // Show copy button on hover over the entire expander width
-    let motion_controller = gtk::EventControllerMotion::new();
-    let copy_button_for_enter = copy_button.clone();
-    motion_controller.connect_enter(move |_, _, _| {
-        copy_button_for_enter.add_css_class("visible");
-    });
-    let copy_button_for_leave = copy_button.clone();
-    motion_controller.connect_leave(move |_| {
-        if !copy_button_for_leave.has_css_class("success") {
-            copy_button_for_leave.remove_css_class("visible");
-        }
-    });
-    expander.add_controller(motion_controller);
-
-    let filename_for_copy = prepared.label.clone();
-    let icon_stack_for_click = icon_stack.clone();
-    let copy_button_for_click = copy_button.clone();
-    copy_button.connect_clicked(move |_| {
-        copy_text_to_clipboard(&filename_for_copy);
-
-        icon_stack_for_click.set_visible_child_name("success");
-        copy_button_for_click.add_css_class("success");
-
-        let stack_clone = icon_stack_for_click.clone();
-        let button_clone = copy_button_for_click.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
-            button_clone.remove_css_class("success");
-            button_clone.remove_css_class("visible");
-
-            let stack_inner = stack_clone.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
-                stack_inner.set_visible_child_name("copy");
-            });
-        });
-    });
-
-    // Spacer eats remaining header width so the copy button stays immediately after the label,
-    // rather than aligning to the far right.
-    let spacer = gtk::Box::builder().hexpand(true).build();
-
-    header.append(&filename_label);
-    header.append(&copy_button);
-    header.append(&spacer);
     expander.set_label_widget(Some(&header));
 
     // If expanded initially, build the heavy child once now.
@@ -960,7 +885,10 @@ fn truncate_to_lines(text: &str, max_lines: usize) -> (String, bool) {
 // Helper function to poll metadata channel and update labels
 fn poll_metadata_result(
     rx: mpsc::Receiver<Result<git::CommitMetadata, git2::Error>>,
-    diff_label: gtk::Label,
+    metadata_label: gtk::Label,
+    sha_row: gtk::Box,
+    sha_label: gtk::Label,
+    sha_copy_text: std::rc::Rc<std::cell::RefCell<String>>,
     commit_message_label: gtk::Label,
     expand_label: gtk::Label,
     full_message: std::rc::Rc<std::cell::RefCell<String>>,
@@ -968,14 +896,17 @@ fn poll_metadata_result(
 ) {
     match rx.try_recv() {
         Ok(Ok(metadata)) => {
-            // Clear skeleton styling
-            clear_metadata_skeleton(&diff_label, &commit_message_label);
+            clear_metadata_skeleton(&metadata_label, &commit_message_label);
 
             let label_text = format!(
-                "{} <{}> - {} - {}",
-                metadata.author_name, metadata.author_email, metadata.date_time, metadata.git_sha
+                "{} <{}> - {} - ",
+                metadata.author_name, metadata.author_email, metadata.date_time
             );
-            diff_label.set_text(&label_text);
+            metadata_label.set_text(&label_text);
+
+            sha_label.set_text(&metadata.git_sha);
+            *sha_copy_text.borrow_mut() = metadata.git_sha.clone();
+            sha_row.set_visible(true);
 
             *full_message.borrow_mut() = metadata.commit_message.clone();
             *is_expanded.borrow_mut() = false;
@@ -988,11 +919,13 @@ fn poll_metadata_result(
             }
         }
         Ok(Err(_)) => {
-            // Clear skeleton styling on error
-            clear_metadata_skeleton(&diff_label, &commit_message_label);
+            clear_metadata_skeleton(&metadata_label, &commit_message_label);
         }
         Err(mpsc::TryRecvError::Empty) => {
-            let diff_label_clone = diff_label.clone();
+            let metadata_label_clone = metadata_label.clone();
+            let sha_row_clone = sha_row.clone();
+            let sha_label_clone = sha_label.clone();
+            let sha_copy_text_clone = sha_copy_text.clone();
             let commit_message_label_clone = commit_message_label.clone();
             let expand_label_clone = expand_label.clone();
             let full_message_clone = full_message.clone();
@@ -1000,7 +933,10 @@ fn poll_metadata_result(
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 poll_metadata_result(
                     rx,
-                    diff_label_clone,
+                    metadata_label_clone,
+                    sha_row_clone,
+                    sha_label_clone,
+                    sha_copy_text_clone,
                     commit_message_label_clone,
                     expand_label_clone,
                     full_message_clone,
@@ -1009,8 +945,7 @@ fn poll_metadata_result(
             });
         }
         Err(_) => {
-            // Channel closed, clear skeleton styling
-            clear_metadata_skeleton(&diff_label, &commit_message_label);
+            clear_metadata_skeleton(&metadata_label, &commit_message_label);
         }
     }
 }
@@ -1019,7 +954,11 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     if let Some(ref path) = *state.current_path.borrow() {
         // Show skeleton loading state
         set_diff_skeleton(&ui.repo_view.diff_files_box);
-        set_metadata_skeleton(&ui.repo_view.diff_label, &ui.repo_view.commit_message_label);
+        set_metadata_skeleton(
+            &ui.repo_view.diff_metadata_label,
+            &ui.repo_view.diff_sha_row,
+            &ui.repo_view.commit_message_label,
+        );
         ui.repo_view.expand_label.set_visible(false);
         *ui.repo_view.is_expanded.borrow_mut() = false;
         update_expand_collapse_buttons(
@@ -1042,7 +981,10 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
         poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
 
         // Load metadata in background thread
-        let diff_label_clone = ui.repo_view.diff_label.clone();
+        let metadata_label_clone = ui.repo_view.diff_metadata_label.clone();
+        let sha_row_clone = ui.repo_view.diff_sha_row.clone();
+        let sha_label_clone = ui.repo_view.diff_sha_label.clone();
+        let sha_copy_text_clone = ui.repo_view.diff_sha_copy_text.clone();
         let commit_message_label_clone = ui.repo_view.commit_message_label.clone();
         let expand_label_clone = ui.repo_view.expand_label.clone();
         let full_message_clone = ui.repo_view.full_message.clone();
@@ -1057,7 +999,10 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
         });
         poll_metadata_result(
             rx_meta,
-            diff_label_clone,
+            metadata_label_clone,
+            sha_row_clone,
+            sha_label_clone,
+            sha_copy_text_clone,
             commit_message_label_clone,
             expand_label_clone,
             full_message_clone,
