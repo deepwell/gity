@@ -78,8 +78,8 @@ pub struct CommitPagingState {
 pub struct CommitList {
     /// The root scrolled window widget.
     pub widget: gtk::ScrolledWindow,
-    /// Selection model for single-commit selection.
-    pub selection_model: gtk::SingleSelection,
+    /// Selection model for commit selection (supports shift-click range select).
+    pub selection_model: gtk::MultiSelection,
     /// The underlying data store.
     pub store: gio::ListStore,
     /// Shared paging state.
@@ -98,7 +98,7 @@ impl CommitList {
     /// Create a new CommitList widget.
     pub fn new() -> Self {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let selection_model = gtk::SingleSelection::new(Some(store.clone()));
+        let selection_model = gtk::MultiSelection::new(Some(store.clone()));
         let column_view = gtk::ColumnView::new(Some(selection_model.clone()));
 
         let tags: Rc<RefCell<HashMap<String, Vec<String>>>> = Rc::new(RefCell::new(HashMap::new()));
@@ -214,12 +214,32 @@ impl CommitList {
         }
     }
 
-    /// Return the SHA of the currently selected commit, if any.
+    /// Return indices of all selected commits in list order.
+    pub fn selected_indices(&self) -> Vec<u32> {
+        let bitset = self.selection_model.selection();
+        let n = self.store.n_items();
+        (0..n).filter(|&i| bitset.contains(i)).collect()
+    }
+
+    /// Return the SHA of the first (newest) selected commit, if any.
     pub fn selected_commit_sha(&self) -> Option<String> {
-        let item = self.selection_model.selected_item()?;
-        let boxed = item.downcast::<glib::BoxedAnyObject>().ok()?;
-        let commit: Ref<GitCommit> = boxed.borrow();
-        Some(commit.id.clone())
+        let indices = self.selected_indices();
+        indices
+            .first()
+            .and_then(|&idx| commit_sha_at(&self.store, idx))
+    }
+
+    /// Return (oldest_sha, newest_sha, count) when multiple commits are selected.
+    pub fn selected_commit_range(&self) -> Option<(String, String, usize)> {
+        let indices = self.selected_indices();
+        if indices.len() <= 1 {
+            return None;
+        }
+        let min_idx = *indices.iter().min().unwrap();
+        let max_idx = *indices.iter().max().unwrap();
+        let newest_sha = commit_sha_at(&self.store, min_idx)?;
+        let oldest_sha = commit_sha_at(&self.store, max_idx)?;
+        Some((oldest_sha, newest_sha, indices.len()))
     }
 
     /// Clear all commits and stop any in-flight loading.
@@ -249,8 +269,7 @@ impl CommitList {
 
         // Clear UI list + selection.
         self.store.remove_all();
-        self.selection_model
-            .set_selected(gtk::INVALID_LIST_POSITION);
+        self.selection_model.unselect_all();
     }
 }
 
@@ -526,6 +545,13 @@ fn setup_infinite_scroll(
 }
 
 /// Find the index of a commit by SHA in the store. Returns `None` if not found.
+fn commit_sha_at(store: &gio::ListStore, idx: u32) -> Option<String> {
+    let item = store.item(idx)?;
+    let boxed = item.downcast::<glib::BoxedAnyObject>().ok()?;
+    let commit: Ref<GitCommit> = boxed.borrow();
+    Some(commit.id.clone())
+}
+
 fn find_commit_index_by_sha(store: &gio::ListStore, sha: &str) -> Option<u32> {
     let n = store.n_items();
     for i in 0..n {
@@ -547,7 +573,7 @@ fn poll_commit_pages(
     expected_generation: u64,
     scrolled_window: gtk::ScrolledWindow,
     store: gio::ListStore,
-    selection_model: gtk::SingleSelection,
+    selection_model: gtk::MultiSelection,
     paging_state: Rc<std::cell::RefCell<CommitPagingState>>,
     repo_path: PathBuf,
     on_first_page_branch: Rc<dyn Fn(String)>,
@@ -640,9 +666,7 @@ fn poll_commit_pages(
                         if exhausted {
                             st.pending_select_sha = None;
                             drop(st);
-                            if selection_model.selected() == gtk::INVALID_LIST_POSITION
-                                && store.n_items() > 0
-                            {
+                            if selection_model.selection().is_empty() && store.n_items() > 0 {
                                 selection_model.select_item(0, true);
                             }
                         } else if !st.is_loading {
@@ -703,7 +727,7 @@ fn poll_commit_pages(
 fn start_commit_paging(
     scrolled_window: &gtk::ScrolledWindow,
     store: &gio::ListStore,
-    selection_model: &gtk::SingleSelection,
+    selection_model: &gtk::MultiSelection,
     paging_state: &Rc<std::cell::RefCell<CommitPagingState>>,
     generation_counter: &Arc<AtomicU64>,
     path: PathBuf,
@@ -713,7 +737,7 @@ fn start_commit_paging(
 ) {
     // Clear existing items + cancel any in-flight worker.
     store.remove_all();
-    selection_model.set_selected(gtk::INVALID_LIST_POSITION);
+    selection_model.unselect_all();
     {
         let mut st = paging_state.borrow_mut();
         if let Some(tx) = st.request_tx.take() {

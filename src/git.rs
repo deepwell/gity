@@ -530,6 +530,47 @@ pub fn get_commit_diff(path: &str, commit_sha: &str) -> Result<String, Error> {
     Ok(diff_text)
 }
 
+pub fn get_range_diff(path: &str, oldest_sha: &str, newest_sha: &str) -> Result<String, Error> {
+    let repo = Repository::open(path)?;
+
+    let oldest_oid = git2::Oid::from_str(oldest_sha)?;
+    let oldest_commit = repo.find_commit(oldest_oid)?;
+
+    let newest_oid = git2::Oid::from_str(newest_sha)?;
+    let newest_commit = repo.find_commit(newest_oid)?;
+
+    let base_tree = if oldest_commit.parents().len() >= 1 {
+        let parent = oldest_commit.parent(0)?;
+        Some(parent.tree()?)
+    } else {
+        None
+    };
+
+    let newest_tree = newest_commit.tree()?;
+
+    let mut diff_text = String::new();
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.context_lines(3);
+    diff_opts.interhunk_lines(0);
+    let diff =
+        repo.diff_tree_to_tree(base_tree.as_ref(), Some(&newest_tree), Some(&mut diff_opts))?;
+
+    diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+        match line.origin() {
+            ' ' | '+' | '-' => {
+                diff_text.push(line.origin());
+            }
+            _ => {}
+        }
+        if let Ok(content) = str::from_utf8(line.content()) {
+            diff_text.push_str(content);
+        }
+        true
+    })?;
+
+    Ok(diff_text)
+}
+
 pub fn validate_repository(path: &Path) -> Result<(), git2::Error> {
     Repository::open(path).map(|_| ())
 }

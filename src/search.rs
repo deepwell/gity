@@ -343,7 +343,7 @@ impl SearchHandler {
     /// Scroll to a specific item index in the scrolled window
     pub fn scroll_to_item(
         scrolled_window: &gtk::ScrolledWindow,
-        selection_model: &gtk::SingleSelection,
+        selection_model: &gtk::MultiSelection,
         item_index: u32,
     ) {
         let scrolled_window1 = scrolled_window.clone();
@@ -399,7 +399,7 @@ impl SearchHandler {
         &self,
         result: SearchResult,
         store: gio::ListStore,
-        selection_model: gtk::SingleSelection,
+        selection_model: gtk::MultiSelection,
         scrolled_window: gtk::ScrolledWindow,
         callback: impl FnOnce(Option<usize>) + 'static,
     ) {

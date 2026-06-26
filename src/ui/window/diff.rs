@@ -1,9 +1,5 @@
-use gtk::{
-    glib::{self, BoxedAnyObject},
-    prelude::*,
-};
+use gtk::{glib, prelude::*};
 use sourceview5 as sv;
-use std::cell::Ref;
 use std::sync::mpsc;
 use sv::prelude::*;
 
@@ -950,6 +946,62 @@ fn poll_metadata_result(
     }
 }
 
+fn load_range_diff(
+    ui: &WindowUi,
+    state: &AppState,
+    oldest_sha: &str,
+    newest_sha: &str,
+    count: usize,
+) {
+    if let Some(ref path) = *state.current_path.borrow() {
+        set_diff_skeleton(&ui.repo_view.diff_files_box);
+        set_metadata_skeleton(
+            &ui.repo_view.diff_metadata_label,
+            &ui.repo_view.diff_sha_row,
+            &ui.repo_view.commit_message_label,
+        );
+        ui.repo_view.expand_label.set_visible(false);
+        *ui.repo_view.is_expanded.borrow_mut() = false;
+        update_expand_collapse_buttons(
+            &ui.repo_view.diff_files_box,
+            &ui.repo_view.diff_expand_all_button,
+            &ui.repo_view.diff_collapse_all_button,
+        );
+
+        let diff_files_box_clone = ui.repo_view.diff_files_box.clone();
+        let expand_btn = ui.repo_view.diff_expand_all_button.clone();
+        let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
+        let path_clone = path.clone();
+        let oldest = oldest_sha.to_string();
+        let newest = newest_sha.to_string();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let diff_result = git::get_range_diff(path_clone.to_str().unwrap(), &oldest, &newest);
+            let _ = tx.send(diff_result);
+        });
+        poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
+
+        clear_metadata_skeleton(
+            &ui.repo_view.diff_metadata_label,
+            &ui.repo_view.commit_message_label,
+        );
+        ui.repo_view
+            .diff_metadata_label
+            .set_text(&format!("{count} commits selected"));
+        let short_oldest = oldest_sha.get(..7).unwrap_or(oldest_sha);
+        let short_newest = newest_sha.get(..7).unwrap_or(newest_sha);
+        ui.repo_view
+            .diff_sha_label
+            .set_text(&format!(" {short_oldest}..{short_newest}"));
+        *ui.repo_view.diff_sha_copy_text.borrow_mut() = format!("{oldest_sha}..{newest_sha}");
+        ui.repo_view.diff_sha_row.set_visible(true);
+        ui.repo_view.commit_message_label.set_text("");
+        *ui.repo_view.full_message.borrow_mut() = String::new();
+    } else {
+        ui.repo_view.reset_diff(Some("No repository loaded"));
+    }
+}
+
 fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     if let Some(ref path) = *state.current_path.borrow() {
         // Show skeleton loading state
@@ -1050,16 +1102,23 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
     ui.repo_view
         .commit_list
         .selection_model
-        .connect_selected_item_notify(move |model: &gtk::SingleSelection| {
-            let selected_item = model.selected_item();
-            if let Some(item) = selected_item {
-                if let Ok(commit_obj) = item.downcast::<BoxedAnyObject>() {
-                    let commit_ref: Ref<git::GitCommit> = commit_obj.borrow();
-                    let commit_sha = commit_ref.id.clone();
-                    load_commit_diff(&ui_for_selection, &state_for_selection, &commit_sha);
-                }
-            } else {
+        .connect_selection_changed(move |_position, _n_items, _model| {
+            let commit_list = &ui_for_selection.repo_view.commit_list;
+            let indices = commit_list.selected_indices();
+            if indices.is_empty() {
                 ui_for_selection.repo_view.reset_diff(None);
+            } else if indices.len() == 1 {
+                if let Some(sha) = commit_list.selected_commit_sha() {
+                    load_commit_diff(&ui_for_selection, &state_for_selection, &sha);
+                }
+            } else if let Some((oldest, newest, count)) = commit_list.selected_commit_range() {
+                load_range_diff(
+                    &ui_for_selection,
+                    &state_for_selection,
+                    &oldest,
+                    &newest,
+                    count,
+                );
             }
         });
 }
