@@ -46,6 +46,16 @@
   </screenshots>
 
   <releases>
+    <release version="2026.3" date="2026-06-25">
+      <description>
+        <ul>
+          <li>Copy a commit SHA from the diff view</li>
+          <li>List and browse remote-tracking branches grouped by remote</li>
+          <li>Select a range of commits to view a combined unified diff</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="2026.2" date="2026-05-09">
       <description>
         <ul>
