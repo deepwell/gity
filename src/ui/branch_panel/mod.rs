@@ -1,21 +1,24 @@
 //! Branch panel UI component for displaying and selecting git branches and tags.
 //!
 //! This module provides the `BranchPanel` widget which displays a list of
-//! git branches and tags with their last commit time and allows single-selection.
-//! Both sections are collapsible with state persisted to gsettings.
+//! git branches, tags, and remote-tracking branches with their last commit time and
+//! allows single-selection. All sections are collapsible with state persisted
+//! to gsettings.
 
 use chrono::{DateTime, Utc};
 use gtk::{gio, prelude::*};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::APP_ID;
 use crate::git::{BranchInfo, TagInfo};
 
-/// Type of git reference (branch or tag).
+/// Type of git reference (branch, remote branch, or tag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefType {
     Branch,
+    Remote,
     Tag,
 }
 
@@ -26,13 +29,12 @@ struct SelectedRef {
     ref_type: RefType,
 }
 
-/// A panel widget that displays a list of git branches and tags.
+/// A panel widget that displays local branches, tags, and remote-tracking branches.
 ///
-/// The panel shows branches and tags in separate collapsible sections, each with:
-/// - A collapsible section header ("Branches" / "Tags")
-/// - A checkmark icon for the currently checked-out branch or viewed tag
-/// - The ref name (with ellipsis for long names)
-/// - Relative time since last commit
+/// The panel shows refs in separate collapsible sections:
+/// - **Branches** — local branches with a checkmark on the checked-out branch
+/// - **Tags**
+/// - **Remotes** — grouped by remote name (e.g. `origin`), each with its own expander
 ///
 /// Branches are sorted with "main" first, then alphabetically using
 /// natural sort order (e.g., "branch-2" comes before "branch-10").
@@ -47,10 +49,18 @@ pub struct BranchPanel {
     branches_list_box: gtk::ListBox,
     /// The list box containing tag rows
     tags_list_box: gtk::ListBox,
+    /// Container for per-remote expanders inside the Remotes section
+    remotes_content_box: gtk::Box,
+    /// List boxes for remote branch rows (one per remote, rebuilt on refresh)
+    remote_list_boxes: Rc<RefCell<Vec<gtk::ListBox>>>,
     /// The expander for branches section (kept for widget lifetime)
     _branches_expander: gtk::Expander,
     /// The expander for tags section (kept for widget lifetime)
     _tags_expander: gtk::Expander,
+    /// The expander for remotes section (kept for widget lifetime)
+    _remotes_expander: gtk::Expander,
+    /// Handler invoked when a ref row is activated (set via `on_ref_selected`)
+    activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
     /// Currently selected reference (name and type)
     selected_ref: Rc<RefCell<Option<SelectedRef>>>,
     /// GSettings for persisting expanded state (kept for reference lifetime)
@@ -63,18 +73,20 @@ impl BranchPanel {
     /// # Arguments
     /// * `branches` - Slice of branch information to display
     pub fn new(branches: &[BranchInfo]) -> Self {
-        Self::new_with_refs(branches, &[], None, None)
+        Self::new_with_refs(branches, &[], &[], None, None)
     }
 
-    /// Create a new BranchPanel with branches, tags, and indication of current state.
+    /// Create a new BranchPanel with branches, remote branches, tags, and indication of current state.
     ///
     /// # Arguments
-    /// * `branches` - Slice of branch information to display
+    /// * `branches` - Slice of local branch information to display
+    /// * `remote_branches` - Slice of remote-tracking branch information to display
     /// * `tags` - Slice of tag information to display
     /// * `checked_out_branch` - Name of the currently checked out branch (if any)
     /// * `current_ref_name` - Name of the currently viewed ref (branch or tag)
     pub fn new_with_refs(
         branches: &[BranchInfo],
+        remote_branches: &[BranchInfo],
         tags: &[TagInfo],
         checked_out_branch: Option<&str>,
         current_ref_name: Option<&str>,
@@ -147,13 +159,52 @@ impl BranchPanel {
         tags_expander.set_child(Some(&tags_list_box));
         content_box.append(&tags_expander);
 
+        // Create remotes section (after branches and tags)
+        let remotes_expander = gtk::Expander::builder()
+            .expanded(settings.boolean("remotes-expanded"))
+            .build();
+        remotes_expander.add_css_class("branch-panel-expander");
+
+        let remotes_label = gtk::Label::builder()
+            .label("Remotes")
+            .halign(gtk::Align::Start)
+            .build();
+        remotes_label.add_css_class("heading");
+        let remotes_label_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .build();
+        remotes_label_box.add_css_class("branch-panel-expander-label");
+        remotes_label_box.append(&remotes_label);
+        remotes_expander.set_label_widget(Some(&remotes_label_box));
+        set_expander_chevron_margin(&remotes_expander, 10);
+
+        let remotes_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+
+        remotes_expander.set_child(Some(&remotes_content_box));
+        content_box.append(&remotes_expander);
+
+        let remote_list_boxes = Rc::new(RefCell::new(Vec::new()));
+        let activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>> =
+            Rc::new(RefCell::new(None));
+        let selected_ref = Rc::new(RefCell::new(None));
+
         scrolled.set_child(Some(&content_box));
         side_panel.append(&scrolled);
         side_panel.set_vexpand(true);
 
-        // Populate list boxes
         populate_branches_list(&branches_list_box, branches, checked_out_branch);
         populate_tags_list(&tags_list_box, tags);
+        populate_remotes_section(
+            &remotes_content_box,
+            &remote_list_boxes,
+            &branches_list_box,
+            &tags_list_box,
+            &selected_ref,
+            &activate_handler,
+            remote_branches,
+        );
 
         // Wire up settings persistence for expanded state
         let settings_for_branches = settings.clone();
@@ -166,43 +217,28 @@ impl BranchPanel {
             let _ = settings_for_tags.set_boolean("tags-expanded", exp.is_expanded());
         });
 
-        let selected_ref = Rc::new(RefCell::new(None));
-
-        // Wire up selection coordination: selecting in one list deselects in the other
-        let tags_list_for_branches = tags_list_box.clone();
-        let selected_ref_for_branches = selected_ref.clone();
-        branches_list_box.connect_row_selected(move |_, row| {
-            if row.is_some() {
-                tags_list_for_branches.unselect_all();
-                // Update selected_ref when row is selected (not just activated)
-                if let Some(r) = row {
-                    if let Some(ref_info) = row_ref_info(r) {
-                        *selected_ref_for_branches.borrow_mut() = Some(ref_info);
-                    }
-                }
-            }
+        let settings_for_remotes = settings.clone();
+        remotes_expander.connect_expanded_notify(move |exp| {
+            let _ = settings_for_remotes.set_boolean("remotes-expanded", exp.is_expanded());
         });
 
-        let branches_list_for_tags = branches_list_box.clone();
-        let selected_ref_for_tags = selected_ref.clone();
-        tags_list_box.connect_row_selected(move |_, row| {
-            if row.is_some() {
-                branches_list_for_tags.unselect_all();
-                // Update selected_ref when row is selected (not just activated)
-                if let Some(r) = row {
-                    if let Some(ref_info) = row_ref_info(r) {
-                        *selected_ref_for_tags.borrow_mut() = Some(ref_info);
-                    }
-                }
-            }
-        });
+        wire_local_list_selection(
+            &branches_list_box,
+            &tags_list_box,
+            &remote_list_boxes,
+            &selected_ref,
+        );
 
         let panel = Self {
             widget: side_panel,
             branches_list_box,
             tags_list_box,
+            remotes_content_box,
+            remote_list_boxes,
             _branches_expander: branches_expander,
             _tags_expander: tags_expander,
+            _remotes_expander: remotes_expander,
+            activate_handler,
             selected_ref,
             _settings: settings,
         };
@@ -217,49 +253,46 @@ impl BranchPanel {
         panel
     }
 
-    /// Update the panel with new lists of branches and tags.
+    /// Update the panel with new lists of branches, remote branches, and tags.
     ///
     /// Attempts to preserve the current selection if possible.
-    ///
-    /// # Arguments
-    /// * `branches` - New slice of branch information
-    /// * `tags` - New slice of tag information
-    /// * `checked_out_branch` - Name of the currently checked out branch (if any)
-    /// * `current_ref_name` - Name of the currently viewed ref (branch or tag)
     pub fn update_refs(
         &self,
         branches: &[BranchInfo],
+        remote_branches: &[BranchInfo],
         tags: &[TagInfo],
         checked_out_branch: Option<&str>,
         current_ref_name: Option<&str>,
     ) {
         // Preserve the last selected ref (or current selected row if present).
-        let preserved = self.selected_ref.borrow().clone().or_else(|| {
-            self.branches_list_box
-                .selected_row()
-                .and_then(|r| row_ref_info(&r))
-                .or_else(|| {
-                    self.tags_list_box
-                        .selected_row()
-                        .and_then(|r| row_ref_info(&r))
-                })
-        });
+        let preserved = self
+            .selected_ref
+            .borrow()
+            .clone()
+            .or_else(|| self.selected_row_ref_info());
 
-        // Clear existing rows from branches list
         while let Some(row) = self.branches_list_box.row_at_index(0) {
             self.branches_list_box.remove(&row);
         }
 
-        // Clear existing rows from tags list
         while let Some(row) = self.tags_list_box.row_at_index(0) {
             self.tags_list_box.remove(&row);
         }
 
-        // Add new branches and tags
+        clear_remotes_section(&self.remotes_content_box, &self.remote_list_boxes);
+
         populate_branches_list(&self.branches_list_box, branches, checked_out_branch);
         populate_tags_list(&self.tags_list_box, tags);
+        populate_remotes_section(
+            &self.remotes_content_box,
+            &self.remote_list_boxes,
+            &self.branches_list_box,
+            &self.tags_list_box,
+            &self.selected_ref,
+            &self.activate_handler,
+            remote_branches,
+        );
 
-        // Restore selection
         if let Some(ref_info) = preserved {
             let _ = self.select_ref(&ref_info.name);
         } else if let Some(name) = current_ref_name {
@@ -268,15 +301,6 @@ impl BranchPanel {
             let _ = self.select_ref(name);
         }
         self.ensure_default_selection();
-    }
-
-    /// Update the panel with a new list of branches (legacy API for compatibility).
-    ///
-    /// # Arguments
-    /// * `branches` - New slice of branch information
-    /// * `checked_out_branch` - Name of the currently checked out branch (if any)
-    pub fn update_branches(&self, branches: &[BranchInfo], checked_out_branch: Option<&str>) {
-        self.update_refs(branches, &[], checked_out_branch, checked_out_branch);
     }
 
     /// Select a ref by name.
@@ -300,6 +324,21 @@ impl BranchPanel {
             i += 1;
         }
 
+        // Search in remote branch list boxes
+        for list_box in self.remote_list_boxes.borrow().iter() {
+            let mut i = 0;
+            while let Some(row) = list_box.row_at_index(i) {
+                if let Some(ref_info) = row_ref_info(&row) {
+                    if ref_info.name == ref_name {
+                        list_box.select_row(Some(&row));
+                        *self.selected_ref.borrow_mut() = Some(ref_info);
+                        return true;
+                    }
+                }
+                i += 1;
+            }
+        }
+
         // Search in tags list
         let mut i = 0;
         while let Some(row) = self.tags_list_box.row_at_index(i) {
@@ -321,29 +360,60 @@ impl BranchPanel {
     /// # Arguments
     /// * `callback` - Function called with the ref name and type when activated
     pub fn on_ref_selected<F: Fn(&str, RefType) + Clone + 'static>(&self, callback: F) {
+        let handler: Rc<dyn Fn(&str, RefType)> = Rc::new(move |name, ty| callback(name, ty));
+        *self.activate_handler.borrow_mut() = Some(handler.clone());
+
         let selected_ref = self.selected_ref.clone();
-        let callback_clone = callback.clone();
+        let handler_for_branches = handler.clone();
         self.branches_list_box.connect_row_activated(move |_, row| {
             if let Some(ref_info) = row_ref_info(row) {
                 *selected_ref.borrow_mut() = Some(ref_info.clone());
-                callback_clone(&ref_info.name, ref_info.ref_type);
+                handler_for_branches(&ref_info.name, ref_info.ref_type);
             }
         });
 
         let selected_ref = self.selected_ref.clone();
+        let handler_for_tags = handler;
         self.tags_list_box.connect_row_activated(move |_, row| {
             if let Some(ref_info) = row_ref_info(row) {
                 *selected_ref.borrow_mut() = Some(ref_info.clone());
-                callback(&ref_info.name, ref_info.ref_type);
+                handler_for_tags(&ref_info.name, ref_info.ref_type);
             }
         });
+
+        // Remote list boxes are wired when populated in `populate_remotes_section`.
+    }
+
+    fn selected_row_ref_info(&self) -> Option<SelectedRef> {
+        self.branches_list_box
+            .selected_row()
+            .and_then(|r| row_ref_info(&r))
+            .or_else(|| {
+                self.tags_list_box
+                    .selected_row()
+                    .and_then(|r| row_ref_info(&r))
+            })
+            .or_else(|| {
+                self.remote_list_boxes
+                    .borrow()
+                    .iter()
+                    .find_map(|lb| lb.selected_row().and_then(|r| row_ref_info(&r)))
+            })
+    }
+
+    fn any_row_selected(&self) -> bool {
+        self.branches_list_box.selected_row().is_some()
+            || self.tags_list_box.selected_row().is_some()
+            || self
+                .remote_list_boxes
+                .borrow()
+                .iter()
+                .any(|lb| lb.selected_row().is_some())
     }
 
     /// Ensure a default ref is selected if nothing is currently selected.
     fn ensure_default_selection(&self) {
-        if self.branches_list_box.selected_row().is_some()
-            || self.tags_list_box.selected_row().is_some()
-        {
+        if self.any_row_selected() {
             return;
         }
 
@@ -392,6 +462,183 @@ fn populate_branches_list(
     }
 }
 
+/// Populate the remotes section with one nested expander per remote name.
+fn populate_remotes_section(
+    content_box: &gtk::Box,
+    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
+    branches_list_box: &gtk::ListBox,
+    tags_list_box: &gtk::ListBox,
+    selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
+    activate_handler: &Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
+    remote_branches: &[BranchInfo],
+) {
+    let grouped = group_remote_branches(remote_branches);
+
+    for (remote_name, branches) in grouped {
+        let remote_expander = gtk::Expander::builder().expanded(true).build();
+        remote_expander.add_css_class("branch-panel-expander");
+        remote_expander.add_css_class("branch-panel-remote-expander");
+
+        let remote_label = gtk::Label::builder()
+            .label(&remote_name)
+            .halign(gtk::Align::Start)
+            .build();
+        remote_label.add_css_class("heading");
+        let remote_label_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .build();
+        remote_label_box.add_css_class("branch-panel-expander-label");
+        remote_label_box.append(&remote_label);
+        remote_expander.set_label_widget(Some(&remote_label_box));
+        set_expander_chevron_margin(&remote_expander, 10);
+
+        let list_box = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .build();
+
+        for branch_info in &branches {
+            list_box.append(&create_remote_branch_row(branch_info));
+        }
+
+        wire_remote_list_box(
+            &list_box,
+            branches_list_box,
+            tags_list_box,
+            remote_list_boxes,
+            selected_ref,
+            activate_handler,
+        );
+
+        remote_expander.set_child(Some(&list_box));
+        content_box.append(&remote_expander);
+        remote_list_boxes.borrow_mut().push(list_box);
+    }
+}
+
+fn clear_remotes_section(
+    content_box: &gtk::Box,
+    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
+) {
+    while let Some(child) = content_box.first_child() {
+        content_box.remove(&child);
+    }
+    remote_list_boxes.borrow_mut().clear();
+}
+
+/// Group remote-tracking branches by remote name (the part before the first `/`).
+fn group_remote_branches(remote_branches: &[BranchInfo]) -> Vec<(String, Vec<BranchInfo>)> {
+    let mut by_remote: BTreeMap<String, Vec<BranchInfo>> = BTreeMap::new();
+
+    for branch in remote_branches {
+        let Some((remote, _)) = branch.name.split_once('/') else {
+            continue;
+        };
+        by_remote
+            .entry(remote.to_string())
+            .or_default()
+            .push(branch.clone());
+    }
+
+    let mut groups: Vec<(String, Vec<BranchInfo>)> = by_remote.into_iter().collect();
+    for (_, branches) in &mut groups {
+        branches.sort_by(|a, b| b.latest_commit_time.cmp(&a.latest_commit_time));
+    }
+    groups
+}
+
+fn remote_branch_short_name(full_name: &str) -> &str {
+    full_name
+        .split_once('/')
+        .map(|(_, b)| b)
+        .unwrap_or(full_name)
+}
+
+fn wire_local_list_selection(
+    branches_list_box: &gtk::ListBox,
+    tags_list_box: &gtk::ListBox,
+    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
+    selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
+) {
+    let tags_for_branches = tags_list_box.clone();
+    let remotes_for_branches = remote_list_boxes.clone();
+    let selected_for_branches = selected_ref.clone();
+    branches_list_box.connect_row_selected(move |_, row| {
+        if row.is_some() {
+            tags_for_branches.unselect_all();
+            unselect_remote_lists(&remotes_for_branches, None);
+            if let Some(r) = row {
+                if let Some(ref_info) = row_ref_info(r) {
+                    *selected_for_branches.borrow_mut() = Some(ref_info);
+                }
+            }
+        }
+    });
+
+    let branches_for_tags = branches_list_box.clone();
+    let remotes_for_tags = remote_list_boxes.clone();
+    let selected_for_tags = selected_ref.clone();
+    tags_list_box.connect_row_selected(move |_, row| {
+        if row.is_some() {
+            branches_for_tags.unselect_all();
+            unselect_remote_lists(&remotes_for_tags, None);
+            if let Some(r) = row {
+                if let Some(ref_info) = row_ref_info(r) {
+                    *selected_for_tags.borrow_mut() = Some(ref_info);
+                }
+            }
+        }
+    });
+}
+
+fn wire_remote_list_box(
+    list_box: &gtk::ListBox,
+    branches_list_box: &gtk::ListBox,
+    tags_list_box: &gtk::ListBox,
+    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
+    selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
+    activate_handler: &Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
+) {
+    let branches_lb = branches_list_box.clone();
+    let tags_lb = tags_list_box.clone();
+    let remotes_rc = remote_list_boxes.clone();
+    let this_lb = list_box.clone();
+    let selected = selected_ref.clone();
+    list_box.connect_row_selected(move |_, row| {
+        if row.is_some() {
+            branches_lb.unselect_all();
+            tags_lb.unselect_all();
+            unselect_remote_lists(&remotes_rc, Some(&this_lb));
+            if let Some(r) = row {
+                if let Some(ref_info) = row_ref_info(r) {
+                    *selected.borrow_mut() = Some(ref_info);
+                }
+            }
+        }
+    });
+
+    let selected = selected_ref.clone();
+    let handler_rc = activate_handler.clone();
+    list_box.connect_row_activated(move |_, row| {
+        if let Some(ref_info) = row_ref_info(row) {
+            *selected.borrow_mut() = Some(ref_info.clone());
+            if let Some(handler) = handler_rc.borrow().as_ref() {
+                handler(&ref_info.name, ref_info.ref_type);
+            }
+        }
+    });
+}
+
+fn unselect_remote_lists(
+    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
+    except: Option<&gtk::ListBox>,
+) {
+    for lb in remote_list_boxes.borrow().iter() {
+        if except.is_none_or(|skip| lb != skip) {
+            lb.unselect_all();
+        }
+    }
+}
+
 /// Populate the tags list box.
 fn populate_tags_list(list_box: &gtk::ListBox, tags: &[TagInfo]) {
     let sorted_tags = sort_tags(tags);
@@ -425,6 +672,14 @@ fn set_expander_chevron_margin(expander: &gtk::Expander, margin_start: i32) {
 
 /// Extract the ref info (name and type) from a list box row.
 fn row_ref_info(row: &gtk::ListBoxRow) -> Option<SelectedRef> {
+    let row_name = row.widget_name();
+    if let Some(full) = row_name.as_str().strip_prefix("remote-ref:") {
+        return Some(SelectedRef {
+            name: full.to_string(),
+            ref_type: RefType::Remote,
+        });
+    }
+
     let child = row.child()?;
     let box_widget = child.downcast_ref::<gtk::Box>()?;
 
@@ -470,7 +725,7 @@ fn sort_branches(branches: &[BranchInfo]) -> Vec<BranchInfo> {
 /// Sort tags alphabetically using natural sort (reverse order so newest versions appear first).
 fn sort_tags(tags: &[TagInfo]) -> Vec<TagInfo> {
     let mut sorted = tags.to_vec();
-    sorted.sort_by(|a, b| natural_compare(&b.name, &a.name)); // Reverse order
+    sorted.sort_by(|a, b| natural_compare(&b.name, &a.name));
     sorted
 }
 
@@ -488,7 +743,6 @@ fn create_branch_row(
         .spacing(8)
         .build();
 
-    // Checkmark indicator: show only if this is the git-checked-out branch (HEAD)
     let is_checked_out = checked_out_branch.is_some_and(|b| b == branch_info.name);
     let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
     check_icon.set_pixel_size(16);
@@ -500,7 +754,6 @@ fn create_branch_row(
     });
     row_box.append(&check_icon);
 
-    // Branch name label with ellipsis for long names
     let branch_label = gtk::Label::builder().halign(gtk::Align::Start).build();
     branch_label.set_widget_name("branch-name");
     branch_label.set_text(&branch_info.name);
@@ -508,7 +761,6 @@ fn create_branch_row(
     branch_label.set_tooltip_text(Some(&branch_info.name));
     row_box.append(&branch_label);
 
-    // Time ago label (lighter color, smaller font, right-aligned)
     let time_label = gtk::Label::builder()
         .halign(gtk::Align::End)
         .hexpand(true)
@@ -526,6 +778,52 @@ fn create_branch_row(
     row_box.set_hexpand(true);
 
     let row = gtk::ListBoxRow::new();
+    row.set_child(Some(&row_box));
+    row
+}
+
+/// Create a GTK row widget for a remote-tracking branch.
+fn create_remote_branch_row(branch_info: &BranchInfo) -> gtk::ListBoxRow {
+    let short_name = remote_branch_short_name(&branch_info.name);
+
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(6)
+        .spacing(8)
+        .build();
+
+    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
+    check_icon.set_pixel_size(16);
+    check_icon.set_opacity(0.0);
+    row_box.append(&check_icon);
+
+    let branch_label = gtk::Label::builder().halign(gtk::Align::Start).build();
+    branch_label.set_text(short_name);
+    branch_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    branch_label.set_tooltip_text(Some(&branch_info.name));
+    row_box.append(&branch_label);
+
+    let time_label = gtk::Label::builder()
+        .halign(gtk::Align::End)
+        .hexpand(true)
+        .build();
+
+    let time_ago = format_time_ago(branch_info.latest_commit_time);
+    let markup = format!(
+        "<span size='small'>{}</span>",
+        gtk::glib::markup_escape_text(&time_ago)
+    );
+    time_label.set_markup(&markup);
+    time_label.add_css_class("dim-label");
+
+    row_box.append(&time_label);
+    row_box.set_hexpand(true);
+
+    let row = gtk::ListBoxRow::new();
+    row.set_widget_name(&format!("remote-ref:{}", branch_info.name));
     row.set_child(Some(&row_box));
     row
 }

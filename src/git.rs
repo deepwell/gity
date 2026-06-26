@@ -352,6 +352,64 @@ pub fn get_local_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
     Ok(branch_infos)
 }
 
+pub fn get_remote_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
+    let repo = Repository::open(path)?;
+    let branches = repo.branches(Some(git2::BranchType::Remote))?;
+
+    let mut branch_infos = Vec::new();
+    for branch in branches {
+        let (branch, _) = branch?;
+        if let Some(name) = branch.name()? {
+            // Skip symbolic refs like origin/HEAD
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            if let Ok(commit) = branch.get().peel_to_commit() {
+                let commit_time = git_time_to_utc(commit.time());
+
+                branch_infos.push(BranchInfo {
+                    name: name.to_string(),
+                    latest_commit_time: commit_time,
+                });
+            }
+        }
+    }
+
+    Ok(branch_infos)
+}
+
+/// Classification of a git ref for UI purposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefClassification {
+    Branch,
+    Remote,
+    Tag,
+}
+
+/// Classify a ref name as local branch, remote-tracking branch, or tag.
+pub fn classify_ref(path: &Path, ref_name: &str) -> RefClassification {
+    let Ok(repo) = Repository::open(path) else {
+        return RefClassification::Branch;
+    };
+
+    let remote_ref = format!("refs/remotes/{ref_name}");
+    if repo.find_reference(&remote_ref).is_ok() {
+        return RefClassification::Remote;
+    }
+
+    let local_ref = format!("refs/heads/{ref_name}");
+    if repo.find_reference(&local_ref).is_ok() {
+        return RefClassification::Branch;
+    }
+
+    let tag_ref = format!("refs/tags/{ref_name}");
+    if repo.find_reference(&tag_ref).is_ok() {
+        return RefClassification::Tag;
+    }
+
+    RefClassification::Branch
+}
+
 #[derive(Clone)]
 pub struct TagInfo {
     pub name: String,

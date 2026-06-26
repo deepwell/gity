@@ -9,6 +9,10 @@
     border-radius: 6px;
 }
 
+.branch-panel-remote-expander {
+    margin-left: 8px;
+}
+
 /* COMMIT LIST */
 /* Tag chip styling */
 .tag-chip {

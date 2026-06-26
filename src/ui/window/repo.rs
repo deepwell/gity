@@ -3,13 +3,21 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::git;
+use crate::git::{self, RefClassification};
 use crate::logger::Logger;
 use crate::ui::RefType;
 
 use super::recent_repos;
 use super::state::AppState;
 use super::ui::WindowUi;
+
+fn ref_type_from_classification(c: RefClassification) -> RefType {
+    match c {
+        RefClassification::Branch => RefType::Branch,
+        RefClassification::Remote => RefType::Remote,
+        RefClassification::Tag => RefType::Tag,
+    }
+}
 
 pub fn show_repo_error(window: &gtk::ApplicationWindow, path: &PathBuf, error: &str) {
     let dialog = gtk::AlertDialog::builder()
@@ -72,7 +80,10 @@ pub fn load_repo_with_selection(
 
     // Pre-set current ref so programmatic selection doesn't trigger redundant reloads.
     *state.current_ref.borrow_mut() = Some(effective_ref.clone());
-    *state.current_ref_type.borrow_mut() = Some(RefType::Branch);
+    *state.current_ref_type.borrow_mut() = Some(ref_type_from_classification(git::classify_ref(
+        &path,
+        &effective_ref,
+    )));
 
     // Update window title with folder name
     let folder_name = path
@@ -121,6 +132,14 @@ pub fn load_repo_with_selection(
         }
     };
 
+    let remote_branches = match git::get_remote_branches(path.to_str().unwrap()) {
+        Ok(b) => b,
+        Err(e) => {
+            Logger::error(&format!("Error reading remote branches: {}", e));
+            Vec::new()
+        }
+    };
+
     let tags = match git::get_tag_list(&path) {
         Ok(t) => t,
         Err(e) => {
@@ -131,6 +150,7 @@ pub fn load_repo_with_selection(
 
     ui.repo_view.branch_panel.update_refs(
         &branches,
+        &remote_branches,
         &tags,
         checked_out_branch.as_deref(),
         Some(&effective_ref),
@@ -421,7 +441,9 @@ pub fn close_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     ui.title_label.set_text(app_name);
 
     ui.repo_view.commit_list.clear();
-    ui.repo_view.branch_panel.update_branches(&[], None);
+    ui.repo_view
+        .branch_panel
+        .update_refs(&[], &[], &[], None, None);
 
     // Reset search UI
     ui.repo_view.search_bar.set_search_mode(false);
@@ -443,7 +465,9 @@ pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
 
     // Clear panels while the new repo loads.
     ui.repo_view.commit_list.clear();
-    ui.repo_view.branch_panel.update_branches(&[], None);
+    ui.repo_view
+        .branch_panel
+        .update_refs(&[], &[], &[], None, None);
 
     // Reset search UI.
     ui.repo_view.search_bar.set_search_mode(false);

@@ -41,5 +41,10 @@
       <summary>Tags section expanded</summary>
       <description>Whether the tags section is expanded in the branch panel</description>
     </key>
+    <key name="remotes-expanded" type="b">
+      <default>true</default>
+      <summary>Remotes section expanded</summary>
+      <description>Whether the remotes section is expanded in the branch panel</description>
+    </key>
   </schema>
 </schemalist>
