@@ -696,3 +696,219 @@ fn find_text_matches_parallel(
     all.sort_unstable();
     Ok(all)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestRepo;
+    use git2::Oid;
+
+    #[test]
+    fn case_insensitive_contains_matches_regardless_of_case() {
+        assert!(contains_ascii_case_insensitive(b"Hello World", b"world"));
+        assert!(contains_ascii_case_insensitive(b"HELLO", b"hello"));
+        assert!(!contains_ascii_case_insensitive(b"Hello World", b"xyz"));
+    }
+
+    #[test]
+    fn case_insensitive_contains_edge_cases() {
+        // Empty needle always matches.
+        assert!(contains_ascii_case_insensitive(b"", b""));
+        assert!(contains_ascii_case_insensitive(b"anything", b""));
+        // Needle longer than haystack never matches.
+        assert!(!contains_ascii_case_insensitive(b"ab", b"abc"));
+    }
+
+    #[test]
+    fn parse_hex_prefix_even_and_odd() {
+        let (bytes, odd) = parse_hex_prefix("abcd").unwrap();
+        assert_eq!(bytes, vec![0xab, 0xcd]);
+        assert_eq!(odd, None);
+
+        let (bytes, odd) = parse_hex_prefix("abc").unwrap();
+        assert_eq!(bytes, vec![0xab]);
+        assert_eq!(odd, Some(0xc));
+    }
+
+    #[test]
+    fn sha_prefix_matches_even_and_odd_nibble() {
+        let oids = vec![
+            Oid::from_str("aabbccddeeff00112233445566778899aabbccdd").unwrap(),
+            Oid::from_str("ab00000000000000000000000000000000000000").unwrap(),
+            Oid::from_str("ffffffffffffffffffffffffffffffffffffffff").unwrap(),
+        ];
+
+        // Even-length prefix matches only the first oid.
+        assert_eq!(
+            find_sha_prefix_matches(&oids, "aabb", None).unwrap(),
+            vec![0]
+        );
+
+        // Odd-length prefix: first byte 0xaa, high nibble of second byte = 0xb.
+        assert_eq!(
+            find_sha_prefix_matches(&oids, "aab", None).unwrap(),
+            vec![0]
+        );
+
+        // No match.
+        let empty: Vec<u32> = Vec::new();
+        assert_eq!(find_sha_prefix_matches(&oids, "1234", None).unwrap(), empty);
+    }
+
+    #[test]
+    fn find_matching_indices_empty_query_returns_empty() {
+        let mut tr = TestRepo::new();
+        tr.commit("only commit");
+
+        let handler = SearchHandler::new();
+        let result = handler
+            .find_matching_indices_in_repo(&tr.path().to_path_buf(), "main", "")
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn find_matching_indices_text_search() {
+        let mut tr = TestRepo::new();
+        tr.commit("alpha first");
+        tr.commit("beta second");
+        tr.commit("gamma third");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+
+        assert_eq!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "beta")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "second")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "missing")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn find_matching_indices_sha_prefix() {
+        let mut tr = TestRepo::new();
+        let target = tr.commit("only commit");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+
+        let prefix = &target.to_string()[..10];
+        assert_eq!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", prefix)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A hex prefix that matches no commit (and no message) returns nothing.
+        assert!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "ffffffffff")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn next_match_index_cycles_and_wraps() {
+        let mut tr = TestRepo::new();
+        tr.commit("common one");
+        tr.commit("other");
+        tr.commit("common two");
+        tr.commit("common three");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+        let q = || "common".to_string();
+
+        let a = handler
+            .compute_next_match_index(q(), &path, "main")
+            .unwrap();
+        let b = handler
+            .compute_next_match_index(q(), &path, "main")
+            .unwrap();
+        let c = handler
+            .compute_next_match_index(q(), &path, "main")
+            .unwrap();
+        let d = handler
+            .compute_next_match_index(q(), &path, "main")
+            .unwrap();
+
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+        assert_eq!(a, d, "should wrap back to the first match");
+    }
+
+    #[test]
+    fn previous_match_index_cycles_and_wraps() {
+        let mut tr = TestRepo::new();
+        tr.commit("common one");
+        tr.commit("other");
+        tr.commit("common two");
+        tr.commit("common three");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+        let q = || "common".to_string();
+
+        let a = handler
+            .compute_previous_match_index(q(), &path, "main")
+            .unwrap();
+        let b = handler
+            .compute_previous_match_index(q(), &path, "main")
+            .unwrap();
+        let c = handler
+            .compute_previous_match_index(q(), &path, "main")
+            .unwrap();
+        let d = handler
+            .compute_previous_match_index(q(), &path, "main")
+            .unwrap();
+
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+        assert_eq!(a, d, "should wrap back to the starting match");
+    }
+
+    #[test]
+    fn oid_index_cache_invalidates_on_branch_change() {
+        let mut tr = TestRepo::new();
+        tr.commit("x1");
+        tr.commit("x2");
+        tr.commit("x3");
+        tr.create_branch("feature", "main");
+        tr.commit_on("feature", "x4");
+        tr.commit_on("feature", "x5");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+
+        let on_main = handler
+            .find_matching_indices_in_repo(&path, "main", "x")
+            .unwrap();
+        assert_eq!(on_main.len(), 3);
+
+        // Switching branch must rebuild the index rather than reuse main's.
+        let on_feature = handler
+            .find_matching_indices_in_repo(&path, "feature", "x")
+            .unwrap();
+        assert_eq!(on_feature.len(), 5);
+    }
+}

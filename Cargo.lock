@@ -536,6 +536,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sourceview5",
+ "tempfile",
  "tokio",
 ]
 

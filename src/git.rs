@@ -733,4 +733,172 @@ mod tests {
             Utc.timestamp_opt(1_700_000_000, 0).unwrap()
         );
     }
+
+    use crate::test_support::TestRepo;
+
+    fn opts_with(revspecs: Vec<String>) -> CommitQueryOptions {
+        let mut o = CommitQueryOptions::for_branch("main");
+        o.revspecs = revspecs;
+        o
+    }
+
+    fn collect(repo: &Repository, opts: CommitQueryOptions) -> Vec<GitCommit> {
+        let mut walker = CommitWalker::new(repo, opts).expect("create walker");
+        let (commits, done) = walker.next_page(1000, None).expect("walk page");
+        assert!(done, "expected to exhaust the revwalk in one page");
+        commits
+    }
+
+    fn messages(commits: &[GitCommit]) -> Vec<String> {
+        commits
+            .iter()
+            .map(|c| c.message.trim().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn default_branch_ref_returns_head_for_non_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(default_branch_ref(dir.path()), "HEAD");
+    }
+
+    #[test]
+    fn default_branch_ref_falls_back_to_main_when_head_unborn() {
+        // Commit only on `main`; HEAD remains on the unborn default branch.
+        let mut tr = TestRepo::new();
+        tr.commit("initial");
+        assert_eq!(default_branch_ref(tr.path()), "main");
+    }
+
+    #[test]
+    fn default_branch_ref_prefers_checked_out_branch() {
+        let mut tr = TestRepo::new();
+        tr.commit("initial");
+        tr.create_branch("feature", "main");
+        tr.commit_on("feature", "feature work");
+        tr.checkout("feature");
+        assert_eq!(default_branch_ref(tr.path()), "feature");
+    }
+
+    #[test]
+    fn commit_walker_lists_newest_first() {
+        let mut tr = TestRepo::new();
+        tr.commit("first");
+        tr.commit("second");
+        tr.commit("third");
+
+        let commits = collect(tr.repo(), CommitQueryOptions::for_branch("main"));
+        assert_eq!(messages(&commits), vec!["third", "second", "first"]);
+    }
+
+    #[test]
+    fn commit_walker_paginates() {
+        let mut tr = TestRepo::new();
+        for i in 0..5 {
+            tr.commit(&format!("commit {i}"));
+        }
+
+        let mut walker =
+            CommitWalker::new(tr.repo(), CommitQueryOptions::for_branch("main")).unwrap();
+
+        let (page1, done1) = walker.next_page(2, None).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert!(!done1);
+
+        let (page2, done2) = walker.next_page(2, None).unwrap();
+        assert_eq!(page2.len(), 2);
+        assert!(!done2);
+
+        let (page3, done3) = walker.next_page(2, None).unwrap();
+        assert_eq!(page3.len(), 1);
+        assert!(done3);
+    }
+
+    #[test]
+    fn commit_walker_filters_by_message() {
+        let mut tr = TestRepo::new();
+        tr.commit("add feature x");
+        tr.commit("fix bug");
+        tr.commit("add feature y");
+
+        let mut opts = CommitQueryOptions::for_branch("main");
+        opts.message_contains = Some("feature".to_string());
+
+        let commits = collect(tr.repo(), opts);
+        assert_eq!(messages(&commits), vec!["add feature y", "add feature x"]);
+    }
+
+    #[test]
+    fn commit_walker_filters_by_author() {
+        let mut tr = TestRepo::new();
+        tr.commit_by("main", "by alice", "Alice", "alice@example.com");
+        tr.commit_by("main", "by bob", "Bob", "bob@example.com");
+        tr.commit_by("main", "also alice", "Alice", "alice@example.com");
+
+        let mut opts = CommitQueryOptions::for_branch("main");
+        opts.author_contains = Some("Alice".to_string());
+
+        let commits = collect(tr.repo(), opts);
+        assert_eq!(messages(&commits), vec!["also alice", "by alice"]);
+    }
+
+    #[test]
+    fn commit_walker_min_parents_selects_only_merge() {
+        let mut tr = TestRepo::new();
+        tr.commit("base");
+        tr.create_branch("feature", "main");
+        tr.commit_on("feature", "feature work");
+        tr.commit("main work");
+        tr.merge_commit("main", "feature", "merge feature");
+
+        let mut opts = CommitQueryOptions::for_branch("main");
+        opts.min_parents = 2;
+
+        let commits = collect(tr.repo(), opts);
+        assert_eq!(messages(&commits), vec!["merge feature"]);
+    }
+
+    #[test]
+    fn commit_walker_max_parents_exclusive_drops_merge() {
+        let mut tr = TestRepo::new();
+        tr.commit("base");
+        tr.create_branch("feature", "main");
+        tr.commit_on("feature", "feature work");
+        tr.commit("main work");
+        tr.merge_commit("main", "feature", "merge feature");
+
+        let mut opts = CommitQueryOptions::for_branch("main");
+        opts.max_parents_exclusive = Some(2);
+
+        let commits = collect(tr.repo(), opts);
+        assert!(
+            !messages(&commits).contains(&"merge feature".to_string()),
+            "merge commit should be excluded, got {:?}",
+            messages(&commits)
+        );
+    }
+
+    #[test]
+    fn commit_walker_handles_revspec_range() {
+        let mut tr = TestRepo::new();
+        let first = tr.commit("first");
+        tr.commit("second");
+        tr.commit("third");
+
+        let commits = collect(tr.repo(), opts_with(vec![format!("{first}..main")]));
+        assert_eq!(messages(&commits), vec!["third", "second"]);
+    }
+
+    #[test]
+    fn commit_walker_hides_excluded_ref() {
+        let mut tr = TestRepo::new();
+        let first = tr.commit("first");
+        tr.commit("second");
+
+        let commits = collect(
+            tr.repo(),
+            opts_with(vec!["main".to_string(), format!("^{first}")]),
+        );
+        assert_eq!(messages(&commits), vec!["second"]);
+    }
 }

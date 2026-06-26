@@ -21,3 +21,6 @@ tokio = { version = "1", features = ["rt"] }
 
 [build-dependencies]
 glib-build-tools = "0.22.0"
+
+[dev-dependencies]
+tempfile = "3"

@@ -4,6 +4,9 @@ mod search;
 mod ui;
 mod version;
 
+#[cfg(test)]
+mod test_support;
+
 use adw;
 use gtk::gdk;
 use gtk::gio;
