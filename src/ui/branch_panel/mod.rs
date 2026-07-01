@@ -36,8 +36,7 @@ struct SelectedRef {
 /// - **Tags**
 /// - **Remotes** — grouped by remote name (e.g. `origin`), each with its own expander
 ///
-/// Branches are sorted with "main" first, then alphabetically using
-/// natural sort order (e.g., "branch-2" comes before "branch-10").
+/// Branches are sorted with "main" or "master" first, then by latest commit time.
 /// Tags are sorted alphabetically using natural sort order.
 ///
 /// Expanded/collapsed state is persisted to gsettings.
@@ -710,16 +709,27 @@ fn row_ref_info(row: &gtk::ListBoxRow) -> Option<SelectedRef> {
     }
 }
 
-/// Sort branches with "main" first, then alphabetically using natural sort.
+/// Sort branches with "main" or "master" first, then by latest commit time.
 fn sort_branches(branches: &[BranchInfo]) -> Vec<BranchInfo> {
     let mut sorted = branches.to_vec();
-    sorted.sort_by(|a, b| match (a.name == "main", b.name == "main") {
-        (true, true) => std::cmp::Ordering::Equal,
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        (false, false) => natural_compare(&a.name, &b.name),
+    sorted.sort_by(|a, b| {
+        branch_priority(&a.name)
+            .cmp(&branch_priority(&b.name))
+            .then_with(|| {
+                b.latest_commit_time
+                    .cmp(&a.latest_commit_time)
+                    .then_with(|| natural_compare(&a.name, &b.name))
+            })
     });
     sorted
+}
+
+fn branch_priority(name: &str) -> u8 {
+    match name {
+        "main" => 0,
+        "master" => 1,
+        _ => 2,
+    }
 }
 
 /// Sort tags alphabetically using natural sort (reverse order so newest versions appear first).
@@ -965,5 +975,78 @@ fn format_time_ago(dt: DateTime<Utc>) -> String {
         format!("{}mo", total_months)
     } else {
         format!("{}y", total_years)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn branch(name: &str, timestamp: i64) -> BranchInfo {
+        BranchInfo {
+            name: name.to_string(),
+            latest_commit_time: Utc.timestamp_opt(timestamp, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn sort_branches_orders_newest_first() {
+        let sorted = sort_branches(&[
+            branch("oldest", 100),
+            branch("newest", 300),
+            branch("middle", 200),
+        ]);
+
+        let names: Vec<_> = sorted.iter().map(|branch| branch.name.as_str()).collect();
+        assert_eq!(names, ["newest", "middle", "oldest"]);
+    }
+
+    #[test]
+    fn sort_branches_pins_main_above_newer_branches() {
+        let sorted = sort_branches(&[
+            branch("main", 100),
+            branch("feature", 300),
+            branch("bugfix", 200),
+        ]);
+
+        let names: Vec<_> = sorted.iter().map(|branch| branch.name.as_str()).collect();
+        assert_eq!(names, ["main", "feature", "bugfix"]);
+    }
+
+    #[test]
+    fn sort_branches_pins_master_above_newer_branches() {
+        let sorted = sort_branches(&[
+            branch("feature", 300),
+            branch("master", 100),
+            branch("bugfix", 200),
+        ]);
+
+        let names: Vec<_> = sorted.iter().map(|branch| branch.name.as_str()).collect();
+        assert_eq!(names, ["master", "feature", "bugfix"]);
+    }
+
+    #[test]
+    fn sort_branches_orders_main_before_master() {
+        let sorted = sort_branches(&[
+            branch("master", 300),
+            branch("main", 100),
+            branch("feature", 200),
+        ]);
+
+        let names: Vec<_> = sorted.iter().map(|branch| branch.name.as_str()).collect();
+        assert_eq!(names, ["main", "master", "feature"]);
+    }
+
+    #[test]
+    fn sort_branches_uses_natural_name_order_for_ties() {
+        let sorted = sort_branches(&[
+            branch("branch-10", 100),
+            branch("branch-2", 100),
+            branch("branch-1", 100),
+        ]);
+
+        let names: Vec<_> = sorted.iter().map(|branch| branch.name.as_str()).collect();
+        assert_eq!(names, ["branch-1", "branch-2", "branch-10"]);
     }
 }
