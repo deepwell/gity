@@ -188,12 +188,13 @@ impl SearchController {
                     *current_cancel_for_timeout.borrow_mut() = Some(cancel_token.clone());
 
                     // Perform search in background thread
-                    let rx = handler_for_timeout.perform_search_async_cancelable(
-                        path_for_timeout.clone(),
-                        branch_name_for_timeout.clone(),
-                        query_for_timeout.clone(),
-                        Some(cancel_token),
-                    );
+                    let (rx, search_progress) = handler_for_timeout
+                        .perform_search_async_cancelable(
+                            path_for_timeout.clone(),
+                            branch_name_for_timeout.clone(),
+                            query_for_timeout.clone(),
+                            Some(cancel_token),
+                        );
 
                     poll_search_result(
                         query_for_timeout.clone(),
@@ -207,6 +208,7 @@ impl SearchController {
                         last_search_status_for_timeout.clone(),
                         commit_paging_state_for_timeout.clone(),
                         search_entry_for_timeout.clone(),
+                        search_progress,
                     );
                 });
 
@@ -409,6 +411,7 @@ fn poll_search_result(
     last_search_status: std::rc::Rc<std::cell::RefCell<String>>,
     commit_paging_state: std::rc::Rc<std::cell::RefCell<CommitPagingState>>,
     search_entry: gtk::SearchEntry,
+    search_progress: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
     fn try_process_search_result(
         expected_query: String,
@@ -490,14 +493,7 @@ fn poll_search_result(
             scrolled_window,
             move |match_count| {
                 let status_text = match match_count {
-                    Some(count) => {
-                        if count == 0 {
-                            String::from("0 matches")
-                        } else {
-                            let count_text = format_usize_with_thousands(count);
-                            format!("{} match{}", count_text, if count == 1 { "" } else { "es" })
-                        }
-                    }
+                    Some(count) => format_match_count(count),
                     None => String::new(),
                 };
                 search_status_label_clone.set_text(&status_text);
@@ -525,6 +521,16 @@ fn poll_search_result(
             );
         }
         Err(mpsc::TryRecvError::Empty) => {
+            // Live progress: while the search is still running, show the number
+            // of matches found so far (updating as more are found). Only touch
+            // the label if this poll still corresponds to the active query.
+            if clamp_search_query(search_entry.text().as_str()) == expected_query {
+                let count = search_progress.load(Ordering::Relaxed);
+                if count > 0 {
+                    search_status_label.set_text(&format_match_count(count));
+                }
+            }
+
             let search_handler_clone = search_handler.clone();
             let store_clone = store.clone();
             let selection_model_clone = selection_model.clone();
@@ -535,6 +541,7 @@ fn poll_search_result(
             let commit_paging_state_clone = commit_paging_state.clone();
             let search_entry_clone = search_entry.clone();
             let expected_query_clone = expected_query.clone();
+            let search_progress_clone = search_progress.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 poll_search_result(
                     expected_query_clone,
@@ -548,6 +555,7 @@ fn poll_search_result(
                     last_search_status_clone,
                     commit_paging_state_clone,
                     search_entry_clone,
+                    search_progress_clone,
                 );
             });
         }
@@ -559,6 +567,17 @@ fn poll_search_result(
             }
         }
     }
+}
+
+/// Format a match count for the status label (e.g. "0 matches", "1 match",
+/// "12,345 matches"). Used both for the final result and for live progress
+/// while a search is still running.
+fn format_match_count(count: usize) -> String {
+    if count == 0 {
+        return String::from("0 matches");
+    }
+    let count_text = format_usize_with_thousands(count);
+    format!("{} match{}", count_text, if count == 1 { "" } else { "es" })
 }
 
 fn format_usize_with_thousands(n: usize) -> String {

@@ -3,7 +3,7 @@ use crate::logger::Logger;
 use git2::{ObjectType, Oid, Repository};
 use gtk::{gio, glib, prelude::*};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -216,15 +216,21 @@ impl SearchHandler {
         branch_ref: &str,
         query: &str,
     ) -> Result<Vec<u32>, String> {
-        self.find_matching_indices_in_repo_cancelable(path, branch_ref, query, None)
+        self.find_matching_indices_in_repo_cancelable(path, branch_ref, query, None, None)
     }
 
+    /// Find matching commit indices, optionally reporting live progress.
+    ///
+    /// When `progress` is provided, it is incremented by one for every match as
+    /// it is found, so the UI can display a running "matches so far" count while
+    /// the search is still running.
     pub fn find_matching_indices_in_repo_cancelable(
         &self,
         path: &PathBuf,
         branch_ref: &str,
         query: &str,
         cancel: Option<Arc<AtomicBool>>,
+        progress: Option<Arc<AtomicUsize>>,
     ) -> Result<Vec<u32>, String> {
         let query_lower = query.to_lowercase();
         if query_lower.is_empty() {
@@ -247,7 +253,8 @@ impl SearchHandler {
         };
         if should_try_sha {
             let started_at = std::time::Instant::now();
-            let sha_matches = find_sha_prefix_matches(&oids, &query_lower, cancel.as_ref())?;
+            let sha_matches =
+                find_sha_prefix_matches(&oids, &query_lower, cancel.as_ref(), progress.as_ref())?;
             if !sha_matches.is_empty() {
                 Logger::info(&format!(
                     "SHA search hit: prefix \"{}\" - {} matches - {}ms",
@@ -261,7 +268,14 @@ impl SearchHandler {
 
         // Full-text search fallback (full commit message, case-insensitive).
         let started_at = std::time::Instant::now();
-        let matches = find_text_matches_parallel(path, oids, query, &query_lower, cancel.as_ref())?;
+        let matches = find_text_matches_parallel(
+            path,
+            oids,
+            query,
+            &query_lower,
+            cancel.as_ref(),
+            progress.as_ref(),
+        )?;
         Logger::info(&format!(
             "Text search completed: \"{}\" - {} matches - {}ms",
             query,
@@ -271,16 +285,23 @@ impl SearchHandler {
         Ok(matches)
     }
 
+    /// Start a cancelable search on a background thread.
+    ///
+    /// Returns the result receiver together with a shared counter that is
+    /// updated with the number of matches found so far while the search runs,
+    /// allowing the UI to show live progress.
     pub fn perform_search_async_cancelable(
         &self,
         path: PathBuf,
         branch_name: Option<String>,
         query: String,
         cancel: Option<Arc<AtomicBool>>,
-    ) -> std::sync::mpsc::Receiver<SearchResult> {
+    ) -> (std::sync::mpsc::Receiver<SearchResult>, Arc<AtomicUsize>) {
         let (tx, rx) = std::sync::mpsc::channel();
+        let progress = Arc::new(AtomicUsize::new(0));
 
         let handler = self.clone();
+        let progress_for_thread = progress.clone();
         std::thread::spawn(move || {
             let query_text = query.clone();
             let start_time = std::time::Instant::now();
@@ -296,6 +317,7 @@ impl SearchHandler {
                 branch_name.as_deref().unwrap_or("HEAD"),
                 &query,
                 cancel.clone(),
+                Some(progress_for_thread),
             ) {
                 Ok(matching_indices) => {
                     let elapsed_ms = start_time.elapsed().as_millis();
@@ -337,7 +359,7 @@ impl SearchHandler {
             let _ = tx.send(result);
         });
 
-        rx
+        (rx, progress)
     }
 
     /// Scroll to a specific item index in the scrolled window
@@ -550,6 +572,7 @@ fn find_sha_prefix_matches(
     oids: &[Oid],
     prefix_lower: &str,
     cancel: Option<&Arc<AtomicBool>>,
+    progress: Option<&Arc<AtomicUsize>>,
 ) -> Result<Vec<u32>, String> {
     let (full_bytes, odd_nibble) = parse_hex_prefix(prefix_lower)?;
     let mut out: Vec<u32> = Vec::new();
@@ -568,6 +591,9 @@ fn find_sha_prefix_matches(
             }
         }
         out.push(i as u32);
+        if let Some(p) = progress {
+            p.fetch_add(1, Ordering::Relaxed);
+        }
     }
     Ok(out)
 }
@@ -604,6 +630,7 @@ fn find_text_matches_parallel(
     query: &str,
     query_lower: &str,
     cancel: Option<&Arc<AtomicBool>>,
+    progress: Option<&Arc<AtomicUsize>>,
 ) -> Result<Vec<u32>, String> {
     let total = oids.len();
     if total == 0 {
@@ -642,6 +669,7 @@ fn find_text_matches_parallel(
         let repo_path = repo_path.clone();
         let oids = oids.clone();
         let cancel = cancel.cloned();
+        let progress = progress.cloned();
         let query_lower = query_lower.to_string();
         let needle_lower_ascii = needle_lower_ascii.clone();
 
@@ -679,6 +707,9 @@ fn find_text_matches_parallel(
 
                 if matched {
                     out.push(i as u32);
+                    if let Some(ref p) = progress {
+                        p.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             let _ = tx.send(Ok(out));
@@ -740,19 +771,22 @@ mod tests {
 
         // Even-length prefix matches only the first oid.
         assert_eq!(
-            find_sha_prefix_matches(&oids, "aabb", None).unwrap(),
+            find_sha_prefix_matches(&oids, "aabb", None, None).unwrap(),
             vec![0]
         );
 
         // Odd-length prefix: first byte 0xaa, high nibble of second byte = 0xb.
         assert_eq!(
-            find_sha_prefix_matches(&oids, "aab", None).unwrap(),
+            find_sha_prefix_matches(&oids, "aab", None, None).unwrap(),
             vec![0]
         );
 
         // No match.
         let empty: Vec<u32> = Vec::new();
-        assert_eq!(find_sha_prefix_matches(&oids, "1234", None).unwrap(), empty);
+        assert_eq!(
+            find_sha_prefix_matches(&oids, "1234", None, None).unwrap(),
+            empty
+        );
     }
 
     #[test]
