@@ -10,8 +10,6 @@ pub fn install() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
         r#"
-.search-entry-with-spinner { padding-right: 28px; }
-
 /* Diff gutter (left bar with line numbers and +/-) – theme-aware for light/dark */
 textview.diff-gutter,
 textview.diff-gutter text {

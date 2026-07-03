@@ -15,8 +15,8 @@ pub struct RepoView {
 
     // Search UI
     pub search_bar: gtk::SearchBar,
-    pub search_entry: gtk::Entry,
-    pub search_spinner: gtk::Spinner,
+    pub search_entry: gtk::SearchEntry,
+    pub search_spinner: adw::Spinner,
     pub search_status_label: gtk::Label,
     pub last_search_status: Rc<RefCell<String>>,
 
@@ -78,22 +78,23 @@ impl RepoView {
     /// The `window` is only used for a couple of UX touches (entry width sizing).
     pub fn new(window: &gtk::ApplicationWindow) -> Self {
         // Search bar component
-        let search_entry = gtk::Entry::builder().placeholder_text("Search...").build();
-        let search_spinner = gtk::Spinner::builder()
-            .spinning(false)
+        let search_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Search...")
+            .build();
+        // adw::Spinner animates automatically whenever it is visible, so loading
+        // state is controlled purely via `set_visible`. It expands to fill its
+        // allocation, so constrain it to a small size. It is shown in the status
+        // area (next to the match count) while a search is running.
+        let search_spinner = adw::Spinner::builder()
             .visible(false)
+            .width_request(16)
+            .height_request(16)
             .build();
         search_spinner.set_valign(gtk::Align::Center);
-        search_spinner.set_halign(gtk::Align::End);
-        search_spinner.set_margin_end(8);
         search_spinner.set_can_target(false);
 
-        // Add some padding so the entry text doesn't overlap the spinner.
-        // Note: this is best-effort; GTK theme nodes may vary slightly.
-        search_entry.add_css_class("search-entry-with-spinner");
-
         // Fixed width so showing/hiding results doesn't shift the centered search entry.
-        let search_status_label = gtk::Label::builder().label("").margin_start(6).build();
+        let search_status_label = gtk::Label::builder().label("").build();
         search_status_label.set_width_chars(20);
         search_status_label.set_xalign(0.0);
 
@@ -123,12 +124,31 @@ impl RepoView {
             search_entry_for_resize.set_width_request(target_width);
         });
 
-        // Put the spinner *inside* the entry area by overlaying it.
-        let search_entry_overlay = gtk::Overlay::new();
-        search_entry_overlay.set_child(Some(&search_entry));
-        search_entry_overlay.add_overlay(&search_spinner);
-        search_container.append(&search_entry_overlay);
-        search_container.append(&search_status_label);
+        // Status area to the right of the entry: a spinner shown while a search
+        // runs, followed by the match-count label once results are in.
+        //
+        // The spinner lives in a fixed-size slot so toggling its visibility does
+        // not change the layout width. Otherwise the centered search entry would
+        // shift/resize each time a (usually fast) search starts and finishes.
+        let search_spinner_slot = gtk::Box::builder()
+            .width_request(16)
+            .height_request(16)
+            .valign(gtk::Align::Center)
+            .build();
+        search_spinner_slot.append(&search_spinner);
+
+        let search_status_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .spacing(6)
+            .margin_start(6)
+            .build();
+        search_status_box.append(&search_spinner_slot);
+        search_status_box.append(&search_status_label);
+
+        search_container.append(&search_entry);
+        search_container.append(&search_status_box);
 
         let search_bar = gtk::SearchBar::builder().search_mode_enabled(false).build();
         search_bar.set_child(Some(&search_container));

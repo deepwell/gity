@@ -102,7 +102,6 @@ impl SearchController {
                 }
 
                 // Clear loading indicator immediately.
-                search_spinner_for_hide.stop();
                 search_spinner_for_hide.set_visible(false);
             });
 
@@ -133,7 +132,6 @@ impl SearchController {
             }
             // Clear the spinner immediately; the new search (if any) will re-enable it
             // when the debounce fires.
-            search_spinner_for_changed.stop();
             search_spinner_for_changed.set_visible(false);
 
             if text.is_empty() {
@@ -183,7 +181,6 @@ impl SearchController {
 
                     // Show loading indicator while the async search runs.
                     search_spinner_for_timeout.set_visible(true);
-                    search_spinner_for_timeout.start();
                     search_status_label_for_timeout.set_text("");
 
                     // Start a new cancel token for this search.
@@ -407,11 +404,11 @@ fn poll_search_result(
     store: gio::ListStore,
     selection_model: gtk::MultiSelection,
     scrolled_window: gtk::ScrolledWindow,
-    search_spinner: gtk::Spinner,
+    search_spinner: adw::Spinner,
     search_status_label: gtk::Label,
     last_search_status: std::rc::Rc<std::cell::RefCell<String>>,
     commit_paging_state: std::rc::Rc<std::cell::RefCell<CommitPagingState>>,
-    search_entry: gtk::Entry,
+    search_entry: gtk::SearchEntry,
 ) {
     fn try_process_search_result(
         expected_query: String,
@@ -420,11 +417,11 @@ fn poll_search_result(
         store: gio::ListStore,
         selection_model: gtk::MultiSelection,
         scrolled_window: gtk::ScrolledWindow,
-        search_spinner: gtk::Spinner,
+        search_spinner: adw::Spinner,
         search_status_label: gtk::Label,
         last_search_status: std::rc::Rc<std::cell::RefCell<String>>,
         commit_paging_state: std::rc::Rc<std::cell::RefCell<CommitPagingState>>,
-        search_entry: gtk::Entry,
+        search_entry: gtk::SearchEntry,
         attempt: u32,
     ) {
         // Ignore stale results (e.g. query changed or repo switched) so we don't
@@ -505,7 +502,6 @@ fn poll_search_result(
                 };
                 search_status_label_clone.set_text(&status_text);
                 *last_search_status_clone.borrow_mut() = status_text;
-                search_spinner_clone.stop();
                 search_spinner_clone.set_visible(false);
             },
         );
@@ -558,7 +554,6 @@ fn poll_search_result(
         Err(_) => {
             // Channel closed; clear loading indicator only if this is still the active query.
             if clamp_search_query(search_entry.text().as_str()) == expected_query {
-                search_spinner.stop();
                 search_spinner.set_visible(false);
                 search_status_label.set_text("");
             }
