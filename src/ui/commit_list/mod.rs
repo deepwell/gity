@@ -114,7 +114,7 @@ impl CommitList {
             branch_head.clone(),
         );
         let author_column = create_column("Author", 150, false, |c: &GitCommit| c.author.clone());
-        let sha_column = create_column("SHA", 120, false, |c: &GitCommit| c.id.clone());
+        let sha_column = create_column("SHA", 120, false, |c: &GitCommit| short_sha(&c.id));
         let date_column = create_column("Date", 200, false, |c: &GitCommit| c.date.clone());
 
         column_view.append_column(&message_column);
@@ -301,6 +301,15 @@ enum CommitLoadResponse {
 // =============================================================================
 // Private helper functions
 // =============================================================================
+
+/// Number of leading characters shown for an abbreviated commit SHA.
+const SHORT_SHA_LEN: usize = 7;
+
+/// Abbreviate a full commit SHA to its short form (first 7 characters).
+/// SHAs are ASCII hex, so slicing on a char count is byte-safe.
+fn short_sha(id: &str) -> String {
+    id.chars().take(SHORT_SHA_LEN).collect()
+}
 
 /// Create a column for the commit list view.
 fn create_column<F>(title: &str, width: i32, expand: bool, extractor: F) -> gtk::ColumnViewColumn
