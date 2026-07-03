@@ -9,6 +9,8 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::APP_ID;
+
 use super::window::recent_repos::{self, RecentRepo};
 
 /// Callback type for when a recent repository is clicked
@@ -21,7 +23,7 @@ pub type RepoRemovedCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 #[derive(Clone)]
 pub struct WelcomeView {
     /// Root widget containing the entire welcome view
-    pub widget: gtk::Box,
+    pub widget: adw::StatusPage,
     /// Container for recent repository cards
     recent_repos_container: gtk::Box,
     /// Callback invoked when a repo card is clicked
@@ -36,49 +38,40 @@ impl WelcomeView {
     /// # Arguments
     /// * `window` - The parent application window (for action dispatch)
     pub fn new(window: &gtk::ApplicationWindow) -> Self {
-        let welcome_box = gtk::Box::builder()
+        // Content shown below the status page title/description: the primary
+        // open button and the recent repositories list.
+        let content_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .valign(gtk::Align::Center)
             .halign(gtk::Align::Center)
-            .spacing(20)
-            .margin_top(40)
-            .margin_bottom(40)
-            .margin_start(40)
-            .margin_end(40)
+            .spacing(24)
             .build();
-
-        let welcome_title = gtk::Label::builder()
-            .label("Open a Git repository")
-            .halign(gtk::Align::Center)
-            .build();
-        welcome_title.add_css_class("title-1");
-
-        let welcome_subtitle = gtk::Label::builder()
-            .label("Choose a folder containing a Git repository to get started.")
-            .halign(gtk::Align::Center)
-            .wrap(true)
-            .build();
-        welcome_subtitle.add_css_class("dim-label");
 
         let welcome_open_button = gtk::Button::builder()
             .label("Open Repository…")
             .halign(gtk::Align::Center)
             .build();
         welcome_open_button.add_css_class("suggested-action");
+        welcome_open_button.add_css_class("pill");
 
-        welcome_box.append(&welcome_title);
-        welcome_box.append(&welcome_subtitle);
-        welcome_box.append(&welcome_open_button);
+        content_box.append(&welcome_open_button);
 
         // Container for recent repositories
         let recent_repos_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .halign(gtk::Align::Center)
-            .margin_top(16)
             .build();
 
-        welcome_box.append(&recent_repos_container);
+        content_box.append(&recent_repos_container);
+
+        // Status page provides the app icon, title, and description with the
+        // spacing conventions expected of a libadwaita welcome screen.
+        let welcome_page = adw::StatusPage::builder()
+            .icon_name(APP_ID)
+            .title("Open a Git repository")
+            .description("Choose a folder containing a Git repository to get started.")
+            .child(&content_box)
+            .build();
 
         // Callbacks for recent repo actions
         let repo_clicked_callback: RepoClickedCallback = Rc::new(RefCell::new(None));
@@ -91,7 +84,7 @@ impl WelcomeView {
         });
 
         Self {
-            widget: welcome_box,
+            widget: welcome_page,
             recent_repos_container,
             repo_clicked_callback,
             repo_removed_callback,

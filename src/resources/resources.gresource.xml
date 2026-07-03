@@ -4,4 +4,7 @@
     <file compressed="true" preprocess="xml-stripblanks" alias="gtk/shortcuts.ui">shortcuts.ui</file>
     <file compressed="true">style.css</file>
   </gresource>
+  <gresource prefix="/com/markdeepwell/gity/icons">
+    <file compressed="true" preprocess="xml-stripblanks" alias="scalable/apps/com.markdeepwell.GitY.svg">../../data/icons/hicolor/scalable/apps/com.markdeepwell.GitY.svg</file>
+  </gresource>
 </gresources>

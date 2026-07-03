@@ -66,13 +66,20 @@ fn main() -> glib::ExitCode {
 
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|app| {
+        let display = gdk::Display::default().expect("Could not get default display");
+
         let css_provider = gtk::CssProvider::new();
         css_provider.load_from_resource("/com/markdeepwell/gity/style.css");
         gtk::style_context_add_provider_for_display(
-            &gdk::Display::default().expect("Could not get default display"),
+            &display,
             &css_provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+
+        // Make the bundled application icon available to the icon theme so it
+        // resolves by name (e.g. on the welcome screen and the About dialog),
+        // including in development runs where system icons aren't installed.
+        gtk::IconTheme::for_display(&display).add_resource_path("/com/markdeepwell/gity/icons");
 
         ui::setup_shortcuts(app);
         ui::setup_app_action(app);
