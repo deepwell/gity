@@ -151,15 +151,9 @@ fn clear_container(container: &gtk::Box) {
     }
 }
 
-fn set_placeholder(container: &gtk::Box, text: &str) {
+fn set_placeholder(container: &gtk::Box, icon_name: &str, text: &str) {
     clear_container(container);
-    container.append(
-        &gtk::Label::builder()
-            .label(text)
-            .halign(gtk::Align::Start)
-            .wrap(true)
-            .build(),
-    );
+    container.append(&crate::ui::placeholder::centered(icon_name, text));
 }
 
 /// Creates a skeleton line widget for loading states
@@ -796,7 +790,11 @@ fn poll_diff_result(
             clear_container(&diff_files_box);
 
             if sections.is_empty() {
-                set_placeholder(&diff_files_box, "");
+                set_placeholder(
+                    &diff_files_box,
+                    crate::ui::placeholder::ICON_INFO,
+                    "No textual changes to display",
+                );
                 update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
                 return;
             }
@@ -843,7 +841,11 @@ fn poll_diff_result(
         }
         Ok(Err(e)) => {
             let error_msg = format!("Error loading diff: {}", e);
-            set_placeholder(&diff_files_box, &error_msg);
+            set_placeholder(
+                &diff_files_box,
+                crate::ui::placeholder::ICON_ERROR,
+                &error_msg,
+            );
             update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
         }
         Err(mpsc::TryRecvError::Empty) => {
@@ -860,7 +862,11 @@ fn poll_diff_result(
             });
         }
         Err(_) => {
-            set_placeholder(&diff_files_box, "Error: channel closed");
+            set_placeholder(
+                &diff_files_box,
+                crate::ui::placeholder::ICON_ERROR,
+                "Error: channel closed",
+            );
             update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
         }
     }
@@ -954,6 +960,7 @@ fn load_range_diff(
     count: usize,
 ) {
     if let Some(ref path) = *state.current_path.borrow() {
+        ui.repo_view.set_diff_chrome_visible(true);
         set_diff_skeleton(&ui.repo_view.diff_files_box);
         set_metadata_skeleton(
             &ui.repo_view.diff_metadata_label,
@@ -1004,6 +1011,7 @@ fn load_range_diff(
 
 fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     if let Some(ref path) = *state.current_path.borrow() {
+        ui.repo_view.set_diff_chrome_visible(true);
         // Show skeleton loading state
         set_diff_skeleton(&ui.repo_view.diff_files_box);
         set_metadata_skeleton(
@@ -1106,7 +1114,9 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
             let commit_list = &ui_for_selection.repo_view.commit_list;
             let indices = commit_list.selected_indices();
             if indices.is_empty() {
-                ui_for_selection.repo_view.reset_diff(None);
+                ui_for_selection
+                    .repo_view
+                    .reset_diff(Some("Select a commit (or a range) to view the commit diff"));
             } else if indices.len() == 1 {
                 if let Some(sha) = commit_list.selected_commit_sha() {
                     load_commit_diff(&ui_for_selection, &state_for_selection, &sha);

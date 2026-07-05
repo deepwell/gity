@@ -27,6 +27,12 @@ pub struct RepoView {
 
     // Diff UI
     pub diff_files_box: gtk::Box,
+    /// Header row holding the "Commit Diff" metadata label and expand/collapse
+    /// buttons. Hidden while the diff placeholder is shown.
+    pub diff_header: gtk::Box,
+    /// Container for the commit message + "Show more" toggle. Hidden while the
+    /// diff placeholder is shown.
+    pub commit_message_container: gtk::Box,
     pub diff_metadata_label: gtk::Label,
     pub diff_sha_row: gtk::Box,
     pub diff_sha_label: gtk::Label,
@@ -47,21 +53,23 @@ impl RepoView {
     /// Reset the diff panel to its empty state.
     ///
     /// Clears all diff file widgets, resets metadata labels, and disables the
-    /// expand/collapse toggle. If `placeholder` is provided, a label with that
-    /// text is shown in the cleared diff area.
+    /// expand/collapse toggle. If `placeholder` is provided, a centered
+    /// placeholder (icon + text) is shown in the cleared diff area.
     pub fn reset_diff(&self, placeholder: Option<&str>) {
         while let Some(child) = self.diff_files_box.first_child() {
             self.diff_files_box.remove(&child);
         }
         if let Some(text) = placeholder {
-            self.diff_files_box.append(
-                &gtk::Label::builder()
-                    .label(text)
-                    .halign(gtk::Align::Start)
-                    .wrap(true)
-                    .build(),
-            );
+            self.diff_files_box
+                .append(&crate::ui::placeholder::centered(
+                    crate::ui::placeholder::ICON_INFO,
+                    text,
+                ));
         }
+
+        // Hide the diff header + commit message so the placeholder fills the
+        // whole diff view; they're shown again when an actual diff loads.
+        self.set_diff_chrome_visible(false);
 
         self.diff_metadata_label.set_text("Commit Diff");
         self.diff_sha_row.set_visible(false);
@@ -71,6 +79,17 @@ impl RepoView {
         *self.is_expanded.borrow_mut() = false;
         self.diff_expand_all_button.set_sensitive(false);
         self.diff_collapse_all_button.set_sensitive(false);
+    }
+
+    /// Show or hide the diff "chrome" (the header row with the metadata label
+    /// and expand/collapse buttons, plus the commit message area).
+    ///
+    /// This is hidden while the empty/placeholder state is shown so the
+    /// placeholder occupies the entire diff view, and shown again once a real
+    /// diff is being displayed.
+    pub fn set_diff_chrome_visible(&self, visible: bool) {
+        self.diff_header.set_visible(visible);
+        self.commit_message_container.set_visible(visible);
     }
 
     /// Builds the full repo screen (search bar + branch/commit panels + diff view).
@@ -181,12 +200,10 @@ impl RepoView {
             .build();
 
         // Initial empty state
-        diff_files_box.append(
-            &gtk::Label::builder()
-                .label("Select a commit to view diff")
-                .halign(gtk::Align::Start)
-                .build(),
-        );
+        diff_files_box.append(&crate::ui::placeholder::centered(
+            crate::ui::placeholder::ICON_INFO,
+            "Select a commit to view diff",
+        ));
 
         let diff_scrolled_window = gtk::ScrolledWindow::builder()
             .min_content_height(200)
@@ -256,6 +273,8 @@ impl RepoView {
             .margin_top(10)
             .margin_bottom(5)
             .spacing(8)
+            // Hidden initially; the diff view starts on the placeholder state.
+            .visible(false)
             .build();
         diff_header.append(&diff_metadata_box);
         diff_header.append(&diff_expand_all_button);
@@ -265,6 +284,8 @@ impl RepoView {
             .orientation(gtk::Orientation::Vertical)
             .margin_start(10)
             .margin_bottom(5)
+            // Hidden initially; the diff view starts on the placeholder state.
+            .visible(false)
             .build();
 
         let commit_message_label = gtk::Label::builder()
@@ -364,6 +385,8 @@ impl RepoView {
             commit_list,
             commit_paging_state,
             diff_files_box,
+            diff_header,
+            commit_message_container,
             diff_metadata_label,
             diff_sha_row,
             diff_sha_label,
