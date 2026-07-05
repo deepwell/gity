@@ -1,6 +1,6 @@
 use adw::prelude::AdwDialogExt;
 use gio::ActionEntry;
-use gtk::{gio, glib, prelude::*};
+use gtk::{gio, prelude::*};
 
 use super::build_ui_for_new_window;
 use super::repo;
@@ -52,36 +52,14 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
         })
         .build();
 
-    // Keyboard shortcuts overlay action
-    let builder = gtk::Builder::from_resource("/com/markdeepwell/gity/gtk/shortcuts.ui");
-    let shortcuts_window: gtk::ShortcutsWindow = builder
-        .object("help_overlay")
-        .expect("Could not get shortcuts window");
-
-    let shortcuts_window_for_close = shortcuts_window.clone();
-    shortcuts_window.connect_close_request(move |_| {
-        shortcuts_window_for_close.set_visible(false);
-        glib::Propagation::Stop
-    });
-
-    let shortcuts_window_for_esc = shortcuts_window.clone();
-    let key_controller = gtk::EventControllerKey::new();
-    key_controller.connect_key_pressed(move |_, keyval, _, _| {
-        if keyval == gtk::gdk::Key::Escape {
-            shortcuts_window_for_esc.set_visible(false);
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
-        }
-    });
-    shortcuts_window.add_controller(key_controller);
-
-    let shortcuts_window_clone = shortcuts_window.clone();
+    // Keyboard shortcuts dialog action
     let action_show_help = ActionEntry::builder("show-help-overlay")
         .activate(move |window: &gtk::ApplicationWindow, _, _| {
-            shortcuts_window_clone.set_transient_for(Some(window));
-            shortcuts_window_clone.set_modal(true);
-            shortcuts_window_clone.present();
+            let builder = gtk::Builder::from_resource("/com/markdeepwell/gity/gtk/shortcuts.ui");
+            let shortcuts_dialog: adw::ShortcutsDialog = builder
+                .object("help_overlay")
+                .expect("Could not get shortcuts dialog");
+            shortcuts_dialog.present(Some(window));
         })
         .build();
 

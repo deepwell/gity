@@ -8,8 +8,8 @@ project('gity', 'rust',
 gnome = import('gnome')
 
 # Dependencies (for pkg-config checks, actual Rust deps come from Cargo.toml)
-dependency('gtk4', version: '>= 4.12')
-dependency('libadwaita-1', version: '>= 1.5')
+dependency('gtk4', version: '>= 4.18')
+dependency('libadwaita-1', version: '>= 1.8')
 dependency('glib-2.0')
 dependency('gio-2.0')
 
