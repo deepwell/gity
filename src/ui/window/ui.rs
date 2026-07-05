@@ -8,8 +8,13 @@ use crate::ui::{RepoView, WelcomeView};
 
 #[derive(Clone)]
 pub struct WindowUi {
+    // The top-level window (used to keep the OS window title in sync).
+    window: gtk::ApplicationWindow,
+    // The application name, used when composing the OS window title.
+    app_name: String,
+
     // Header / navigation
-    pub title_label: gtk::Label,
+    pub title: adw::WindowTitle,
     pub close_repo_button: gtk::Button,
     pub open_button: gtk::Button,
     pub search_button: gtk::Button,
@@ -35,8 +40,11 @@ impl WindowUi {
         // Header bar + title
         let header_bar = adw::HeaderBar::new();
 
-        let title_label = gtk::Label::builder().label(app_name).build();
-        header_bar.set_title_widget(Some(&title_label));
+        // adw::WindowTitle shows the repository name as the title and additional
+        // context (e.g. the current branch) as the subtitle, following the
+        // standard Adwaita header-bar pattern.
+        let title = adw::WindowTitle::new(app_name, "");
+        header_bar.set_title_widget(Some(&title));
 
         let close_repo_button = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
@@ -104,7 +112,9 @@ impl WindowUi {
         stack.add_named(&welcome_view.widget, Some("welcome"));
 
         Self {
-            title_label,
+            window,
+            app_name: app_name.to_string(),
+            title,
             close_repo_button,
             open_button,
             search_button,
@@ -144,6 +154,42 @@ impl WindowUi {
         if let Some(ref action) = *self.refresh_action.borrow() {
             action.set_enabled(visible);
         }
+    }
+
+    /// Set the header title to the repository name with a subtitle (typically
+    /// the current branch/ref). Also updates the OS window title (taskbar,
+    /// alt-tab, overview) to "repo - branch - AppName".
+    pub fn set_repo_title(&self, repo_name: &str, subtitle: &str) {
+        self.title.set_title(repo_name);
+        self.title.set_subtitle(subtitle);
+        self.update_os_title(repo_name, subtitle);
+    }
+
+    /// Update only the header subtitle (e.g. after switching branch or tag).
+    /// Keeps the OS window title in sync with the new branch/ref.
+    pub fn set_repo_subtitle(&self, subtitle: &str) {
+        self.title.set_subtitle(subtitle);
+        let repo_name = self.title.title();
+        self.update_os_title(repo_name.as_str(), subtitle);
+    }
+
+    /// Reset the header and OS window titles back to the application name with
+    /// no subtitle.
+    pub fn reset_title(&self, app_name: &str) {
+        self.title.set_title(app_name);
+        self.title.set_subtitle("");
+        self.window.set_title(Some(app_name));
+    }
+
+    /// Compose and apply the OS window title as "repo - branch - AppName"
+    /// (omitting the branch when it is empty).
+    fn update_os_title(&self, repo_name: &str, branch: &str) {
+        let os_title = if branch.is_empty() {
+            format!("{} - {}", repo_name, self.app_name)
+        } else {
+            format!("{} - {} - {}", repo_name, branch, self.app_name)
+        };
+        self.window.set_title(Some(&os_title));
     }
 
     pub fn show_main(&self) {

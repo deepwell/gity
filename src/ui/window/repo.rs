@@ -85,13 +85,12 @@ pub fn load_repo_with_selection(
         &effective_ref,
     )));
 
-    // Update window title with folder name
+    // Update header title with the repository name and current branch/ref.
     let folder_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_else(|| path.to_str().unwrap_or("Unknown"));
-    ui.title_label
-        .set_text(&format!("{} - {}", app_name, folder_name));
+    ui.set_repo_title(folder_name, &effective_ref);
 
     // Load tags for commit list display (SHA -> tag names mapping)
     match git::get_tags(&path) {
@@ -171,6 +170,9 @@ pub fn switch_ref(ui: &WindowUi, state: &AppState, ref_name: &str, ref_type: Ref
     // Update current ref state
     *state.current_ref.borrow_mut() = Some(ref_name.to_string());
     *state.current_ref_type.borrow_mut() = Some(ref_type);
+
+    // Reflect the newly selected branch/tag in the header subtitle.
+    ui.set_repo_subtitle(ref_name);
 
     // Reload only the commit list (tags are already loaded and don't change per-ref)
     ui.repo_view
@@ -438,7 +440,7 @@ pub fn refresh_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
 
 pub fn close_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     state.clear_repo();
-    ui.title_label.set_text(app_name);
+    ui.reset_title(app_name);
 
     ui.repo_view.commit_list.clear();
     ui.repo_view
