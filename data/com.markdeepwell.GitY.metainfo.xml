@@ -36,12 +36,19 @@
 
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/repository-screen.png</image>
-      <caption>Browse and search Git commit history</caption>
+      <image type="thumbnail" width="1000" height="700">https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/search-commits.png</image>
+      <image type="source" width="2000" height="1400" scale="2">https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/search-commits-2x.png</image>
+      <caption>Search through the full Git commit history by commit description</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/welcome-screen.png</image>
-      <caption>Initial screen showing recently opened repositories</caption>
+      <image type="thumbnail" width="1000" height="700">https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/multiple-commits-selected.png</image>
+      <image type="source" width="2000" height="1400" scale="2">https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/multiple-commits-selected-2x.png</image>
+      <caption>View the source diff for multiple commits</caption>
+    </screenshot>
+    <screenshot>
+      <image type="thumbnail" width="1000" height="700">https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/welcome-screen.png</image>
+      <image type="source" width="2000" height="1400" scale="2">https://raw.githubusercontent.com/deepwell/gity/refs/heads/main/data/screenshots/welcome-screen-2x.png</image>
+      <caption>Initial app screen showing recently opened repositories</caption>
     </screenshot>
   </screenshots>
 
