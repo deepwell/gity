@@ -53,6 +53,20 @@
   </screenshots>
 
   <releases>
+    <release version="2026.4" date="2026-07-28">
+      <description>
+        <ul>
+          <li>Show a placeholder message when no commit diff is displayed</li>
+          <li>Show the repository and current branch/tag name in the window title</li>
+          <li>Show a short Git SHA in the commit list</li>
+          <li>Display a live match count while a search is running</li>
+          <li>Sort branches by main/master first and then by latest commit time</li>
+          <li>Add the app icon to the welcome screen</li>
+          <li>Use the Adwaita keyboard shortcuts dialog</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="2026.3" date="2026-06-25">
       <description>
         <ul>
