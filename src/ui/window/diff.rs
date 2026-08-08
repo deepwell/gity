@@ -274,59 +274,43 @@ struct DiffSection {
     text: String,
 }
 
-fn parse_diff_sections(diff: &str) -> Vec<DiffSection> {
-    let mut sections: Vec<DiffSection> = Vec::new();
-    let mut current_label: Option<String> = None;
-    let mut current_lines: Vec<&str> = Vec::new();
+fn file_change_label(file: &git::FileChange) -> String {
+    match file.kind {
+        git::FileChangeKind::Renamed | git::FileChangeKind::Copied => {
+            let old = file.old_path.as_deref().unwrap_or("?");
+            let new = file.new_path.as_deref().unwrap_or("?");
+            format!("{old} → {new}")
+        }
+        git::FileChangeKind::Deleted => file
+            .old_path
+            .clone()
+            .or_else(|| file.new_path.clone())
+            .unwrap_or_else(|| "Deleted file".to_string()),
+        _ => file
+            .new_path
+            .clone()
+            .or_else(|| file.old_path.clone())
+            .unwrap_or_else(|| "Diff".to_string()),
+    }
+}
 
-    for line in diff.lines() {
-        if line.starts_with("diff --git ") {
-            if let Some(label) = current_label.take() {
-                sections.push(DiffSection {
-                    label,
-                    text: current_lines.join("\n") + "\n",
-                });
-                current_lines.clear();
-            }
-
-            // Example: diff --git a/foo/bar.rs b/foo/bar.rs
-            let mut label = "Diff".to_string();
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 {
-                let b_path = parts[3].trim_start_matches("b/");
-                if !b_path.is_empty() {
-                    label = b_path.to_string();
+fn sections_from_commit_diff(diff: &git::CommitDiff) -> Vec<DiffSection> {
+    diff.files
+        .iter()
+        .map(|file| {
+            let label = file_change_label(file);
+            let text = if file.patch.trim().is_empty() {
+                match file.kind {
+                    git::FileChangeKind::Renamed => "Renamed with no content changes\n".to_string(),
+                    git::FileChangeKind::Copied => "Copied with no content changes\n".to_string(),
+                    _ => String::new(),
                 }
-            }
-
-            current_label = Some(label);
-            // Don't include the diff header line itself in the displayed text.
-            continue;
-        }
-
-        // Hide noisy patch header lines inside each file section.
-        if line.starts_with("index ") || line.starts_with("---") || line.starts_with("+++") {
-            continue;
-        }
-
-        current_lines.push(line);
-    }
-
-    if let Some(label) = current_label.take() {
-        sections.push(DiffSection {
-            label,
-            text: current_lines.join("\n") + "\n",
-        });
-    }
-
-    if sections.is_empty() && !diff.trim().is_empty() {
-        sections.push(DiffSection {
-            label: "Diff".to_string(),
-            text: diff.to_string(),
-        });
-    }
-
-    sections
+            } else {
+                file.patch.clone()
+            };
+            DiffSection { label, text }
+        })
+        .collect()
 }
 
 fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
@@ -779,22 +763,39 @@ fn build_file_expander_lazy(
 
 // Helper function to poll channel and update diff UI
 fn poll_diff_result(
-    rx: mpsc::Receiver<Result<String, git2::Error>>,
+    rx: mpsc::Receiver<Result<git::CommitDiff, git2::Error>>,
     diff_files_box: gtk::Box,
     expand_button: gtk::Button,
     collapse_button: gtk::Button,
 ) {
     match rx.try_recv() {
         Ok(Ok(diff)) => {
-            let sections = parse_diff_sections(&diff);
+            let sections = sections_from_commit_diff(&diff);
             clear_container(&diff_files_box);
 
+            if let Some(preamble) = diff.preamble.as_ref().filter(|s| !s.trim().is_empty()) {
+                let preamble_label = gtk::Label::builder()
+                    .label(preamble.as_str())
+                    .halign(gtk::Align::Start)
+                    .wrap(true)
+                    .xalign(0.0)
+                    .margin_start(10)
+                    .margin_end(10)
+                    .margin_top(8)
+                    .margin_bottom(4)
+                    .build();
+                preamble_label.add_css_class("dim-label");
+                diff_files_box.append(&preamble_label);
+            }
+
             if sections.is_empty() {
-                set_placeholder(
-                    &diff_files_box,
-                    crate::ui::placeholder::ICON_INFO,
-                    "No textual changes to display",
-                );
+                if diff.preamble.is_none() {
+                    set_placeholder(
+                        &diff_files_box,
+                        crate::ui::placeholder::ICON_INFO,
+                        "No textual changes to display",
+                    );
+                }
                 update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
                 return;
             }

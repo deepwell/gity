@@ -1,6 +1,8 @@
 use chrono::prelude::*;
-use git2::{Commit, DiffOptions, ObjectType, Repository, Signature, Time};
-use git2::{DiffFormat, Error, Pathspec};
+use git2::{
+    Commit, Delta, Diff, DiffDelta, DiffFindOptions, DiffFormat, DiffLineType, DiffOptions, Error,
+    ObjectType, Pathspec, Repository, Signature, Time,
+};
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -9,6 +11,143 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::logger::Logger;
+
+/// Kind of change for one file in a commit/range diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileChangeKind {
+    Added,
+    Deleted,
+    Modified,
+    Renamed,
+    Copied,
+    Typechange,
+    Unreadable,
+    Conflicted,
+    Unmodified,
+    Ignored,
+    Untracked,
+}
+
+/// One file's change within a commit or commit-range diff.
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub kind: FileChangeKind,
+    pub old_path: Option<String>,
+    pub new_path: Option<String>,
+    /// Content / hunk lines only (no `diff --git` / rename headers).
+    pub patch: String,
+}
+
+/// Structured diff for a single commit or a commit range.
+#[derive(Debug, Clone)]
+pub struct CommitDiff {
+    /// Optional notice shown above the file list (e.g. merge-commit note).
+    pub preamble: Option<String>,
+    pub files: Vec<FileChange>,
+}
+
+fn file_change_kind(status: Delta) -> FileChangeKind {
+    match status {
+        Delta::Added => FileChangeKind::Added,
+        Delta::Deleted => FileChangeKind::Deleted,
+        Delta::Modified => FileChangeKind::Modified,
+        Delta::Renamed => FileChangeKind::Renamed,
+        Delta::Copied => FileChangeKind::Copied,
+        Delta::Typechange => FileChangeKind::Typechange,
+        Delta::Unreadable => FileChangeKind::Unreadable,
+        Delta::Conflicted => FileChangeKind::Conflicted,
+        Delta::Unmodified => FileChangeKind::Unmodified,
+        Delta::Ignored => FileChangeKind::Ignored,
+        Delta::Untracked => FileChangeKind::Untracked,
+    }
+}
+
+fn diff_path(path: Option<&Path>) -> Option<String> {
+    path.map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+}
+
+fn file_change_from_delta(delta: &DiffDelta<'_>) -> FileChange {
+    FileChange {
+        kind: file_change_kind(delta.status()),
+        old_path: diff_path(delta.old_file().path()),
+        new_path: diff_path(delta.new_file().path()),
+        patch: String::new(),
+    }
+}
+
+fn delta_matches_file(delta: &DiffDelta<'_>, file: &FileChange) -> bool {
+    file.kind == file_change_kind(delta.status())
+        && file.old_path == diff_path(delta.old_file().path())
+        && file.new_path == diff_path(delta.new_file().path())
+}
+
+fn append_patch_line(patch: &mut String, line: &git2::DiffLine<'_>) {
+    match line.origin_value() {
+        DiffLineType::FileHeader => {
+            // Status/paths live on FileChange; skip rename/index/---/+++ headers.
+        }
+        DiffLineType::Context | DiffLineType::Addition | DiffLineType::Deletion => {
+            patch.push(line.origin());
+            if let Ok(content) = str::from_utf8(line.content()) {
+                patch.push_str(content);
+            }
+        }
+        DiffLineType::HunkHeader
+        | DiffLineType::Binary
+        | DiffLineType::ContextEOFNL
+        | DiffLineType::AddEOFNL
+        | DiffLineType::DeleteEOFNL => {
+            if let Ok(content) = str::from_utf8(line.content()) {
+                patch.push_str(content);
+            }
+        }
+    }
+}
+
+fn commit_diff_from_trees(
+    repo: &Repository,
+    old_tree: Option<&git2::Tree<'_>>,
+    new_tree: &git2::Tree<'_>,
+    preamble: Option<String>,
+) -> Result<CommitDiff, Error> {
+    let mut diff_opts = DiffOptions::new();
+    diff_opts.context_lines(3);
+    diff_opts.interhunk_lines(0);
+    let mut diff = repo.diff_tree_to_tree(old_tree, Some(new_tree), Some(&mut diff_opts))?;
+
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).rename_threshold(50);
+    diff.find_similar(Some(&mut find_opts))?;
+
+    Ok(CommitDiff {
+        preamble,
+        files: collect_file_changes(&mut diff)?,
+    })
+}
+
+fn collect_file_changes(diff: &mut Diff<'_>) -> Result<Vec<FileChange>, Error> {
+    let mut files: Vec<FileChange> = diff.deltas().map(|d| file_change_from_delta(&d)).collect();
+    let mut file_idx = 0usize;
+
+    diff.print(DiffFormat::Patch, |delta, _hunk, line| {
+        if file_idx >= files.len() {
+            return true;
+        }
+        if !delta_matches_file(&delta, &files[file_idx]) {
+            while file_idx < files.len() && !delta_matches_file(&delta, &files[file_idx]) {
+                file_idx += 1;
+            }
+            if file_idx >= files.len() {
+                return true;
+            }
+        }
+        append_patch_line(&mut files[file_idx].patch, &line);
+        true
+    })?;
+
+    Ok(files)
+}
 
 /// Determines which ref the UI should open by default for the repository at `path`.
 ///
@@ -480,19 +619,17 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
     })
 }
 
-pub fn get_commit_diff(path: &str, commit_sha: &str) -> Result<String, Error> {
+pub fn get_commit_diff(path: &str, commit_sha: &str) -> Result<CommitDiff, Error> {
     let repo = Repository::open(path)?;
     let commit_oid = git2::Oid::from_str(commit_sha)?;
     let commit = repo.find_commit(commit_oid)?;
 
-    let mut diff_text = String::new();
+    let preamble = if commit.parents().len() > 1 {
+        Some("Merge commit - showing diff against first parent".to_string())
+    } else {
+        None
+    };
 
-    // Handle merge commits (multiple parents)
-    if commit.parents().len() > 1 {
-        diff_text.push_str("Merge commit - showing diff against first parent\n\n");
-    }
-
-    // Get parent tree if it exists
     let parent_tree = if commit.parents().len() >= 1 {
         let parent = commit.parent(0)?;
         Some(parent.tree()?)
@@ -500,37 +637,11 @@ pub fn get_commit_diff(path: &str, commit_sha: &str) -> Result<String, Error> {
         None
     };
 
-    // Get commit tree
     let commit_tree = commit.tree()?;
-
-    // Create diff with a small amount of context around changes (like `git show -U3`).
-    let mut diff_opts = DiffOptions::new();
-    diff_opts.context_lines(3);
-    diff_opts.interhunk_lines(0);
-    let diff = repo.diff_tree_to_tree(
-        parent_tree.as_ref(),
-        Some(&commit_tree),
-        Some(&mut diff_opts),
-    )?;
-
-    // Format diff as patch
-    diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-        match line.origin() {
-            ' ' | '+' | '-' => {
-                diff_text.push(line.origin());
-            }
-            _ => {}
-        }
-        if let Ok(content) = str::from_utf8(line.content()) {
-            diff_text.push_str(content);
-        }
-        true
-    })?;
-
-    Ok(diff_text)
+    commit_diff_from_trees(&repo, parent_tree.as_ref(), &commit_tree, preamble)
 }
 
-pub fn get_range_diff(path: &str, oldest_sha: &str, newest_sha: &str) -> Result<String, Error> {
+pub fn get_range_diff(path: &str, oldest_sha: &str, newest_sha: &str) -> Result<CommitDiff, Error> {
     let repo = Repository::open(path)?;
 
     let oldest_oid = git2::Oid::from_str(oldest_sha)?;
@@ -547,28 +658,7 @@ pub fn get_range_diff(path: &str, oldest_sha: &str, newest_sha: &str) -> Result<
     };
 
     let newest_tree = newest_commit.tree()?;
-
-    let mut diff_text = String::new();
-    let mut diff_opts = DiffOptions::new();
-    diff_opts.context_lines(3);
-    diff_opts.interhunk_lines(0);
-    let diff =
-        repo.diff_tree_to_tree(base_tree.as_ref(), Some(&newest_tree), Some(&mut diff_opts))?;
-
-    diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-        match line.origin() {
-            ' ' | '+' | '-' => {
-                diff_text.push(line.origin());
-            }
-            _ => {}
-        }
-        if let Ok(content) = str::from_utf8(line.content()) {
-            diff_text.push_str(content);
-        }
-        true
-    })?;
-
-    Ok(diff_text)
+    commit_diff_from_trees(&repo, base_tree.as_ref(), &newest_tree, None)
 }
 
 pub fn validate_repository(path: &Path) -> Result<(), git2::Error> {
@@ -900,5 +990,64 @@ mod tests {
             opts_with(vec!["main".to_string(), format!("^{first}")]),
         );
         assert_eq!(messages(&commits), vec!["second"]);
+    }
+
+    #[test]
+    fn get_commit_diff_detects_rename_with_edits() {
+        let mut tr = TestRepo::new();
+        let mut original = String::new();
+        for i in 0..40 {
+            original.push_str(&format!("line {i} shared content\n"));
+        }
+        tr.commit_file("main", "brew.sh", &original, "add brew");
+
+        let mut modified = original.clone();
+        modified.push_str("line extra after rename\n");
+        let workdir = tr.path().to_path_buf();
+        std::fs::remove_file(workdir.join("brew.sh")).unwrap();
+        std::fs::create_dir_all(workdir.join("macos")).unwrap();
+        std::fs::write(workdir.join("macos/packages.sh"), &modified).unwrap();
+
+        let mut index = tr.repo().index().unwrap();
+        index.remove_path(Path::new("brew.sh")).unwrap();
+        index.add_path(Path::new("macos/packages.sh")).unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        index.write().unwrap();
+
+        let parent = tr.repo().find_commit(tr.tip("main")).unwrap();
+        let tree = tr.repo().find_tree(tree_oid).unwrap();
+        let sig = Signature::now("Tester", "tester@example.com").unwrap();
+        let rename_oid = tr
+            .repo()
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "rename brew to packages",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+
+        let diff = get_commit_diff(tr.path().to_str().unwrap(), &rename_oid.to_string()).unwrap();
+        assert_eq!(
+            diff.files.len(),
+            1,
+            "expected single rename delta, got {:?}",
+            diff.files
+        );
+        let file = &diff.files[0];
+        assert_eq!(file.kind, FileChangeKind::Renamed);
+        assert_eq!(file.old_path.as_deref(), Some("brew.sh"));
+        assert_eq!(file.new_path.as_deref(), Some("macos/packages.sh"));
+        assert!(
+            file.patch.contains("+line extra after rename"),
+            "expected edit hunk in patch, got:\n{}",
+            file.patch
+        );
+        assert!(
+            !file.patch.contains("diff --git"),
+            "patch should not include file headers"
+        );
     }
 }
