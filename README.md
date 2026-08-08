@@ -32,19 +32,14 @@ To build and run the development version:
 cargo run
 ```
 
-### Release Build and Install
-To build and install the release version:
+### Build and Install
+To build and install the current version:
 ```bash
-./build-release.sh
-```
-
-Or to install to a custom prefix:
-```bash
-./build-release.sh /custom/prefix
+./install.sh
 ```
 
 This will:
-- Configure a release build in `build-release/` directory
+- Configure a release build in `builddir-meson/` directory
 - Compile the application with optimizations
 - Install to the system (requires sudo for system directories)
 - Compile GSettings schemas in the install location

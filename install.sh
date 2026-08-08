@@ -3,7 +3,7 @@
 
 set -e
 
-BUILD_DIR="build-release"
+BUILD_DIR="builddir-meson"
 PREFIX="${1:-/usr}"
 
 # Configure Meson build for release
