@@ -10,7 +10,7 @@
     </p>
     <ul>
       <li>View all branches, tags, and commits for local Git repositories</li>
-      <li>Search by commit message or Git SHA</li>
+      <li>Search by commit message, author, or Git SHA</li>
       <li>Coloured Git diff viewer</li>
       <li>Remembers recently opened Git repositories</li>
     </ul>

@@ -107,7 +107,7 @@ impl RepoView {
     pub fn new(window: &gtk::ApplicationWindow) -> Self {
         // Search bar component
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Search")
+            .placeholder_text("Search messages, authors, or SHA")
             .build();
         // adw::Spinner animates automatically whenever it is visible, so loading
         // state is controlled purely via `set_visible`. It expands to fill its

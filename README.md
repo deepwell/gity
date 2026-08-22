@@ -1,7 +1,7 @@
 # GitY
 
 A simple and fast Git repository browser.
-View branches, commit diffs, and search through all commit messages.
+View branches, commit diffs, and search through commit messages, authors, and Git SHAs.
 
 ![Screenshot of the welcome screen](data/screenshots/welcome-screen.png)
 ![Screenshot of the main repository screen](data/screenshots/repository-screen.png)

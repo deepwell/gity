@@ -266,7 +266,7 @@ impl SearchHandler {
             }
         }
 
-        // Full-text search fallback (full commit message, case-insensitive).
+        // Full-text search fallback (commit message and author, case-insensitive).
         let started_at = std::time::Instant::now();
         let matches = find_text_matches_parallel(
             path,
@@ -598,6 +598,20 @@ fn find_sha_prefix_matches(
     Ok(out)
 }
 
+fn field_contains_query(
+    haystack: &[u8],
+    query_lower: &str,
+    needle_lower_ascii: Option<&[u8]>,
+) -> bool {
+    if let Some(needle_lower) = needle_lower_ascii {
+        contains_ascii_case_insensitive(haystack, needle_lower)
+    } else {
+        String::from_utf8_lossy(haystack)
+            .to_lowercase()
+            .contains(query_lower)
+    }
+}
+
 fn contains_ascii_case_insensitive(haystack: &[u8], needle_lower: &[u8]) -> bool {
     if needle_lower.is_empty() {
         return true;
@@ -697,13 +711,11 @@ fn find_text_matches_parallel(
                     }
                 };
 
-                let msg_bytes = commit.message_bytes();
-                let matched = if let Some(ref needle_lower) = needle_lower_ascii {
-                    contains_ascii_case_insensitive(msg_bytes, needle_lower)
-                } else {
-                    let msg = String::from_utf8_lossy(msg_bytes);
-                    msg.to_lowercase().contains(&query_lower)
-                };
+                let author = commit.author();
+                let needle = needle_lower_ascii.as_deref();
+                let matched = field_contains_query(commit.message_bytes(), &query_lower, needle)
+                    || field_contains_query(author.name_bytes(), &query_lower, needle)
+                    || field_contains_query(author.email_bytes(), &query_lower, needle);
 
                 if matched {
                     out.push(i as u32);
@@ -799,6 +811,64 @@ mod tests {
             .find_matching_indices_in_repo(&tr.path().to_path_buf(), "main", "")
             .unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn find_matching_indices_author_name_and_email() {
+        let mut tr = TestRepo::new();
+        tr.commit_by("main", "first", "Alice", "alice@example.com");
+        tr.commit_by("main", "second", "Bob", "bob@example.com");
+        tr.commit_by("main", "third", "Alice", "alice@example.com");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+
+        assert_eq!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "alice")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "Bob")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "bob@example.com")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn find_matching_indices_author_or_message() {
+        let mut tr = TestRepo::new();
+        tr.commit_by("main", "unrelated", "Alice", "alice@example.com");
+        tr.commit_by(
+            "main",
+            "mentions alice in the message",
+            "Bob",
+            "bob@example.com",
+        );
+        tr.commit_by("main", "other", "Carol", "carol@example.com");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+
+        // Author match on Alice's commit plus message match on Bob's commit.
+        assert_eq!(
+            handler
+                .find_matching_indices_in_repo(&path, "main", "alice")
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
