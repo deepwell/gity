@@ -298,12 +298,14 @@ impl RepoView {
             .visible(false)
             .build();
 
+        // Fill the pane so wrap uses allocated width, not the label's natural size.
         let commit_message_label = gtk::Label::builder()
             .label("")
-            .halign(gtk::Align::Start)
+            .halign(gtk::Align::Fill)
             .hexpand(true)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .natural_wrap_mode(gtk::NaturalWrapMode::None)
             .selectable(true)
             .xalign(0.0)
             .build();
