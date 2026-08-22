@@ -53,6 +53,20 @@
   </screenshots>
 
   <releases>
+    <release version="2026.5" date="2026-08-22">
+      <description>
+        <ul>
+          <li>Re-open the last repository when the app is started</li>
+          <li>Open a repository by dragging it onto the welcome screen</li>
+          <li>Search commits by author name or email</li>
+          <li>Detect renamed files and show what changed</li>
+          <li>Scroll through long commit descriptions after expanding them</li>
+          <li>Show the number of branches, tags, and remotes on hover</li>
+          <li>Open a recent repository in Files from the welcome screen context menu</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="2026.4" date="2026-07-28">
       <description>
         <ul>
