@@ -58,6 +58,10 @@ pub struct BranchPanel {
     _tags_expander: gtk::Expander,
     /// The expander for remotes section (kept for widget lifetime)
     _remotes_expander: gtk::Expander,
+    /// Section labels used to show ref counts on hover
+    branches_label: gtk::Label,
+    tags_label: gtk::Label,
+    remotes_label: gtk::Label,
     /// Handler invoked when a ref row is activated (set via `on_ref_selected`)
     activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
     /// Currently selected reference (name and type)
@@ -204,6 +208,14 @@ impl BranchPanel {
             &activate_handler,
             remote_branches,
         );
+        set_section_count_tooltips(
+            &branches_label,
+            &tags_label,
+            &remotes_label,
+            branches,
+            remote_branches,
+            tags,
+        );
 
         // Wire up settings persistence for expanded state
         let settings_for_branches = settings.clone();
@@ -237,6 +249,9 @@ impl BranchPanel {
             _branches_expander: branches_expander,
             _tags_expander: tags_expander,
             _remotes_expander: remotes_expander,
+            branches_label,
+            tags_label,
+            remotes_label,
             activate_handler,
             selected_ref,
             _settings: settings,
@@ -290,6 +305,14 @@ impl BranchPanel {
             &self.selected_ref,
             &self.activate_handler,
             remote_branches,
+        );
+        set_section_count_tooltips(
+            &self.branches_label,
+            &self.tags_label,
+            &self.remotes_label,
+            branches,
+            remote_branches,
+            tags,
         );
 
         if let Some(ref_info) = preserved {
@@ -488,6 +511,7 @@ fn populate_remotes_section(
             .build();
         remote_label_box.add_css_class("branch-panel-expander-label");
         remote_label_box.append(&remote_label);
+        set_label_count_tooltip(&remote_label, branches.len(), "branch", "branches");
         remote_expander.set_label_widget(Some(&remote_label_box));
         set_expander_chevron_margin(&remote_expander, 10);
 
@@ -644,6 +668,42 @@ fn populate_tags_list(list_box: &gtk::ListBox, tags: &[TagInfo]) {
     for tag_info in &sorted_tags {
         let row = create_tag_row(tag_info);
         list_box.append(&row);
+    }
+}
+
+/// Format a hover tooltip describing how many refs are in a section.
+fn format_count_tooltip(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+/// Show branch, tag, and remote totals on the section labels.
+fn set_section_count_tooltips(
+    branches_label: &gtk::Label,
+    tags_label: &gtk::Label,
+    remotes_label: &gtk::Label,
+    branches: &[BranchInfo],
+    remote_branches: &[BranchInfo],
+    tags: &[TagInfo],
+) {
+    set_label_count_tooltip(branches_label, branches.len(), "branch", "branches");
+    set_label_count_tooltip(tags_label, tags.len(), "tag", "tags");
+    set_label_count_tooltip(
+        remotes_label,
+        group_remote_branches(remote_branches).len(),
+        "remote",
+        "remotes",
+    );
+}
+
+fn set_label_count_tooltip(label: &gtk::Label, count: usize, singular: &str, plural: &str) {
+    let text = format_count_tooltip(count, singular, plural);
+    label.set_tooltip_text(Some(&text));
+    if let Some(parent) = label.parent() {
+        parent.set_tooltip_text(Some(&text));
     }
 }
 
@@ -1048,5 +1108,19 @@ mod tests {
 
         let names: Vec<_> = sorted.iter().map(|branch| branch.name.as_str()).collect();
         assert_eq!(names, ["branch-1", "branch-2", "branch-10"]);
+    }
+
+    #[test]
+    fn format_count_tooltip_uses_singular_for_one() {
+        assert_eq!(format_count_tooltip(1, "branch", "branches"), "1 branch");
+        assert_eq!(format_count_tooltip(1, "tag", "tags"), "1 tag");
+        assert_eq!(format_count_tooltip(1, "remote", "remotes"), "1 remote");
+    }
+
+    #[test]
+    fn format_count_tooltip_uses_plural_for_zero_and_many() {
+        assert_eq!(format_count_tooltip(0, "branch", "branches"), "0 branches");
+        assert_eq!(format_count_tooltip(12, "tag", "tags"), "12 tags");
+        assert_eq!(format_count_tooltip(2, "remote", "remotes"), "2 remotes");
     }
 }
