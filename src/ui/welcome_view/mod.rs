@@ -208,7 +208,7 @@ impl WelcomeView {
             });
             card.add_controller(gesture);
 
-            // Set up right-click context menu to remove repo
+            // Set up right-click context menu
             let path_for_menu = repo.path.clone();
             let right_click = gtk::GestureClick::new();
             right_click.set_button(3);
@@ -218,15 +218,23 @@ impl WelcomeView {
             popover.set_parent(&card);
             popover.set_has_arrow(true);
 
-            // Create menu model
             let menu = gio::Menu::new();
-            menu.append(Some("Remove from list"), Some("recent.remove"));
+            menu.append(Some("Show in Files"), Some("recent.show-in-files"));
+            menu.append(Some("Remove From Recent"), Some("recent.remove"));
             popover.set_menu_model(Some(&menu));
 
-            // Create action group for the remove action
             let action_group = gio::SimpleActionGroup::new();
-            let remove_action = gio::SimpleAction::new("remove", None);
 
+            let show_action = gio::SimpleAction::new("show-in-files", None);
+            let path_for_show = path_for_menu.clone();
+            let card_for_show = card.clone();
+            show_action.connect_activate(move |_, _| {
+                let parent = card_for_show.root().and_downcast::<gtk::Window>();
+                show_in_files(parent.as_ref(), &path_for_show);
+            });
+            action_group.add_action(&show_action);
+
+            let remove_action = gio::SimpleAction::new("remove", None);
             let path_for_action = path_for_menu.clone();
             let removed_callback = self.repo_removed_callback.clone();
             remove_action.connect_activate(move |_, _| {
@@ -341,6 +349,17 @@ fn first_local_directory(files: impl IntoIterator<Item = gio::File>) -> Option<g
 fn is_local_directory(file: &gio::File) -> bool {
     file.query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
         == gio::FileType::Directory
+}
+
+/// Reveal `path` in the default file manager (GNOME Files).
+fn show_in_files(parent: Option<&gtk::Window>, path: &std::path::Path) {
+    let file = gio::File::for_path(path);
+    let launcher = gtk::FileLauncher::new(Some(&file));
+    launcher.open_containing_folder(parent, gio::Cancellable::NONE, |result| {
+        if let Err(e) = result {
+            crate::logger::Logger::error(&format!("Failed to show in Files: {e}"));
+        }
+    });
 }
 
 #[cfg(test)]
