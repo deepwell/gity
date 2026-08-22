@@ -6,11 +6,11 @@
   <summary>View and search full Git history</summary>
   <description>
     <p>
-      A simple and fast Git repository browser to view Git branches, tags, and commit diffs.
+      A fast and performant Git repository browser with comprehensive search across the full commit history. View diffs and information about all commits in any branch or tag.
     </p>
     <ul>
-      <li>View all branches, tags, and commits for local Git repositories</li>
-      <li>Search by commit message, author, or Git SHA</li>
+      <li>View all branches, tags, commits and remotes for local Git repositories</li>
+      <li>Search the full commit history by message, author, or Git SHA</li>
       <li>Coloured Git diff viewer</li>
       <li>Remembers recently opened Git repositories</li>
     </ul>
