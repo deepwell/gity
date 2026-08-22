@@ -40,6 +40,9 @@ pub struct RepoView {
     pub diff_expand_all_button: gtk::Button,
     pub diff_collapse_all_button: gtk::Button,
     pub commit_message_label: gtk::Label,
+    /// Scrolls the commit message when "Show more" reveals a body taller than
+    /// the reserved viewport, so the diff list below stays reachable.
+    pub commit_message_scrolled: gtk::ScrolledWindow,
     pub expand_label: gtk::Label,
     pub full_message: Rc<RefCell<String>>,
     pub is_expanded: Rc<RefCell<bool>>,
@@ -76,7 +79,7 @@ impl RepoView {
         self.commit_message_label.set_text("");
         self.expand_label.set_visible(false);
         *self.full_message.borrow_mut() = String::new();
-        *self.is_expanded.borrow_mut() = false;
+        self.reset_commit_message_expansion();
         self.diff_expand_all_button.set_sensitive(false);
         self.diff_collapse_all_button.set_sensitive(false);
     }
@@ -90,6 +93,12 @@ impl RepoView {
     pub fn set_diff_chrome_visible(&self, visible: bool) {
         self.diff_header.set_visible(visible);
         self.commit_message_container.set_visible(visible);
+    }
+
+    /// Collapse the commit message back to its truncated height and reset scroll.
+    pub fn reset_commit_message_expansion(&self) {
+        *self.is_expanded.borrow_mut() = false;
+        uncap_message_scroller(&self.commit_message_scrolled);
     }
 
     /// Builds the full repo screen (search bar + branch/commit panels + diff view).
@@ -283,6 +292,7 @@ impl RepoView {
         let commit_message_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .margin_start(10)
+            .margin_end(10)
             .margin_bottom(5)
             // Hidden initially; the diff view starts on the placeholder state.
             .visible(false)
@@ -291,9 +301,31 @@ impl RepoView {
         let commit_message_label = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::Start)
+            .hexpand(true)
             .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
+            .xalign(0.0)
             .build();
+
+        // Cap the expanded message with its own scroller so a huge body cannot
+        // push the diff list off-screen. The "Show more"/"Show less" toggle
+        // stays outside this scroller so it remains clickable.
+        let commit_message_scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .vexpand(false)
+            .hexpand(true)
+            .has_frame(false)
+            .build();
+        // Clicking the selectable label should not yank the viewport to the
+        // top of a message that is taller than the reserved area.
+        let commit_message_viewport = gtk::Viewport::builder()
+            .scroll_to_focus(false)
+            .child(&commit_message_label)
+            .build();
+        commit_message_scrolled.set_child(Some(&commit_message_viewport));
 
         let expand_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -304,11 +336,19 @@ impl RepoView {
         expand_label.set_markup("<b>Show more</b>");
         expand_label.set_cursor_from_name(Some("pointer"));
 
-        commit_message_container.append(&commit_message_label);
+        commit_message_container.append(&commit_message_scrolled);
         commit_message_container.append(&expand_label);
 
         let full_message = Rc::new(RefCell::new(String::new()));
         let is_expanded = Rc::new(RefCell::new(false));
+
+        let diff_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .build();
+        diff_box.append(&diff_header);
+        diff_box.append(&commit_message_container);
+        diff_box.append(&diff_scrolled_window);
 
         let gesture = gtk::GestureClick::new();
         gesture.set_button(1);
@@ -317,6 +357,8 @@ impl RepoView {
         let expand_label_for_toggle = expand_label.clone();
         let full_message_for_toggle = full_message.clone();
         let is_expanded_for_toggle = is_expanded.clone();
+        let scrolled_for_toggle = commit_message_scrolled.clone();
+        let diff_box_for_toggle = diff_box.clone();
         gesture.connect_pressed(move |_, _, _, _| {
             let mut expanded = is_expanded_for_toggle.borrow_mut();
             *expanded = !*expanded;
@@ -325,6 +367,8 @@ impl RepoView {
             if *expanded {
                 commit_message_label_for_toggle.set_text(&full_msg);
                 expand_label_for_toggle.set_markup("<b>Show less</b>");
+                cap_expanded_message_scroller(&scrolled_for_toggle, diff_box_for_toggle.height());
+                scrolled_for_toggle.vadjustment().set_value(0.0);
             } else {
                 let lines: Vec<&str> = full_msg.lines().collect();
                 let has_more = lines.len() > 5;
@@ -338,17 +382,10 @@ impl RepoView {
                 if has_more {
                     expand_label_for_toggle.set_markup("<b>Show more</b>");
                 }
+                uncap_message_scroller(&scrolled_for_toggle);
             }
         });
         expand_label.add_controller(gesture);
-
-        let diff_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .vexpand(true)
-            .build();
-        diff_box.append(&diff_header);
-        diff_box.append(&commit_message_container);
-        diff_box.append(&diff_scrolled_window);
 
         // Layout (paned widgets)
         let main_content_paned = gtk::Paned::new(gtk::Orientation::Vertical);
@@ -358,6 +395,24 @@ impl RepoView {
         main_content_paned.set_resize_end_child(true);
         main_content_paned.set_shrink_start_child(true);
         main_content_paned.set_shrink_end_child(true);
+
+        let recap_expanded_message = {
+            let scrolled = commit_message_scrolled.clone();
+            let is_expanded = is_expanded.clone();
+            let diff_box = diff_box.clone();
+            Rc::new(move || {
+                if *is_expanded.borrow() {
+                    cap_expanded_message_scroller(&scrolled, diff_box.height());
+                }
+            })
+        };
+        let recap_for_paned = recap_expanded_message.clone();
+        main_content_paned.connect_notify_local(Some("position"), move |_, _| {
+            recap_for_paned();
+        });
+        window.connect_default_height_notify(move |_| {
+            recap_expanded_message();
+        });
 
         let horizontal_paned = gtk::Paned::new(gtk::Orientation::Horizontal);
         horizontal_paned.set_start_child(Some(&side_panel));
@@ -394,11 +449,54 @@ impl RepoView {
             diff_expand_all_button,
             diff_collapse_all_button,
             commit_message_label,
+            commit_message_scrolled,
             expand_label,
             full_message,
             is_expanded,
             main_content_paned,
             horizontal_paned,
         }
+    }
+}
+
+/// Minimum space reserved for the diff list when a long commit message is expanded.
+const MIN_DIFF_SPACE: i32 = 160;
+/// Floor for the expanded commit-message viewport so a short panel still scrolls.
+const MIN_MESSAGE_VIEW: i32 = 80;
+
+fn expanded_message_max_height(panel_height: i32) -> i32 {
+    (panel_height / 2)
+        .min(panel_height.saturating_sub(MIN_DIFF_SPACE))
+        .max(MIN_MESSAGE_VIEW)
+}
+
+fn cap_expanded_message_scroller(scrolled: &gtk::ScrolledWindow, panel_height: i32) {
+    let max_h = expanded_message_max_height(panel_height);
+    if scrolled.max_content_height() != max_h {
+        scrolled.set_max_content_height(max_h);
+    }
+}
+
+fn uncap_message_scroller(scrolled: &gtk::ScrolledWindow) {
+    if scrolled.max_content_height() != -1 {
+        scrolled.set_max_content_height(-1);
+    }
+    scrolled.vadjustment().set_value(0.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expanded_message_max_height_caps_at_half_panel() {
+        assert_eq!(expanded_message_max_height(800), 400);
+        assert_eq!(expanded_message_max_height(400), 200);
+    }
+
+    #[test]
+    fn expanded_message_max_height_leaves_diff_space_on_short_panels() {
+        assert_eq!(expanded_message_max_height(200), MIN_MESSAGE_VIEW);
+        assert_eq!(expanded_message_max_height(0), MIN_MESSAGE_VIEW);
     }
 }

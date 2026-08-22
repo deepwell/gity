@@ -969,7 +969,7 @@ fn load_range_diff(
             &ui.repo_view.commit_message_label,
         );
         ui.repo_view.expand_label.set_visible(false);
-        *ui.repo_view.is_expanded.borrow_mut() = false;
+        ui.repo_view.reset_commit_message_expansion();
         update_expand_collapse_buttons(
             &ui.repo_view.diff_files_box,
             &ui.repo_view.diff_expand_all_button,
@@ -1021,7 +1021,7 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
             &ui.repo_view.commit_message_label,
         );
         ui.repo_view.expand_label.set_visible(false);
-        *ui.repo_view.is_expanded.borrow_mut() = false;
+        ui.repo_view.reset_commit_message_expansion();
         update_expand_collapse_buttons(
             &ui.repo_view.diff_files_box,
             &ui.repo_view.diff_expand_all_button,
