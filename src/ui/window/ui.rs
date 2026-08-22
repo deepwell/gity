@@ -141,6 +141,11 @@ impl WindowUi {
         self.welcome_view.on_repo_removed(callback);
     }
 
+    /// Set a callback for when a folder is dropped on the welcome screen.
+    pub fn on_folder_dropped<F: Fn(gio::File) + 'static>(&self, callback: F) {
+        self.welcome_view.on_folder_dropped(callback);
+    }
+
     /// Refresh the recent repositories list on the welcome screen.
     pub fn refresh_recent_repos(&self) {
         self.welcome_view.refresh_recent_repos();

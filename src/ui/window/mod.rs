@@ -127,6 +127,20 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
         ui_for_removed.refresh_recent_repos();
     });
 
+    // Open a dropped folder on the welcome screen (discover worktree, then load).
+    let window_for_drop = window.clone();
+    let ui_for_drop = ui.clone();
+    let state_for_drop = app_state.clone();
+    ui.on_folder_dropped(move |file| {
+        repo::open_repo_from_gio_file(
+            &window_for_drop,
+            &ui_for_drop,
+            &state_for_drop,
+            APP_NAME,
+            &file,
+        );
+    });
+
     // Refresh recent repos on welcome screen
     ui.refresh_recent_repos();
 

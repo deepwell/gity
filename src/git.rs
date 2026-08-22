@@ -671,12 +671,15 @@ pub fn validate_repository(path: &Path) -> Result<(), git2::Error> {
 /// - repo directory for bare repositories
 pub fn discover_repository_root(path: &Path) -> Option<PathBuf> {
     let repo = Repository::discover(path).ok()?;
-    if let Some(workdir) = repo.workdir() {
-        Some(workdir.to_path_buf())
+    let raw = if let Some(workdir) = repo.workdir() {
+        workdir.to_path_buf()
     } else {
         // Bare repository
-        Some(repo.path().to_path_buf())
-    }
+        repo.path().to_path_buf()
+    };
+    // git2 often returns a trailing slash on workdirs; normalize so callers
+    // can strip prefixes and compare paths reliably.
+    Some(raw.components().collect())
 }
 
 pub fn branch_exists(path: &Path, branch_name: &str) -> bool {
@@ -844,6 +847,26 @@ mod tests {
             .iter()
             .map(|c| c.message.trim().to_string())
             .collect()
+    }
+
+    #[test]
+    fn discover_repository_root_finds_worktree_from_subdirectory() {
+        let mut tr = TestRepo::new();
+        tr.commit("initial");
+        let nested = tr.path().join("src").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let discovered = discover_repository_root(&nested).expect("nested path is inside a repo");
+        assert_eq!(
+            discovered.canonicalize().unwrap(),
+            tr.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn discover_repository_root_returns_none_outside_a_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(discover_repository_root(dir.path()).is_none());
     }
 
     #[test]

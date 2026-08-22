@@ -37,6 +37,11 @@ textview.diff-view text {
   border-color: @accent_color;
   box-shadow: 0 2px 8px alpha(black, 0.1);
 }
+
+/* Highlight the welcome screen while a folder is dragged over it */
+.welcome-drop-target:drop(active) {
+  background-color: alpha(@accent_bg_color, 0.08);
+}
 "#,
     );
 

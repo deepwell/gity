@@ -3,8 +3,9 @@
 //! This module encapsulates the welcome screen UI including:
 //! - Welcome message and open button
 //! - Recent repositories list with cards
+//! - Drag-and-drop of a folder URI to open a repository
 
-use gtk::{gio, prelude::*};
+use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -18,6 +19,8 @@ use super::window::recent_repos::{self, RecentRepo};
 pub type RepoClickedCallback = Rc<RefCell<Option<Box<dyn Fn(PathBuf, PathBuf)>>>>;
 /// Callback type for when a recent repository is removed (to trigger refresh)
 pub type RepoRemovedCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+/// Callback type for when a local folder is dropped on the welcome screen
+pub type FolderDroppedCallback = Rc<RefCell<Option<Box<dyn Fn(gio::File)>>>>;
 
 /// The welcome view shown when no repository is loaded.
 #[derive(Clone)]
@@ -30,6 +33,8 @@ pub struct WelcomeView {
     repo_clicked_callback: RepoClickedCallback,
     /// Callback invoked when a repo is removed from the list
     repo_removed_callback: RepoRemovedCallback,
+    /// Callback invoked when a folder is dropped onto the welcome screen
+    folder_dropped_callback: FolderDroppedCallback,
 }
 
 impl WelcomeView {
@@ -69,13 +74,15 @@ impl WelcomeView {
         let welcome_page = adw::StatusPage::builder()
             .icon_name(APP_ID)
             .title("Open a Git repository")
-            .description("Choose a folder containing a Git repository to get started.")
+            .description("Choose or drop a folder containing a Git repository to get started.")
             .child(&content_box)
             .build();
+        welcome_page.add_css_class("welcome-drop-target");
 
-        // Callbacks for recent repo actions
+        // Callbacks for recent repo actions and folder drops
         let repo_clicked_callback: RepoClickedCallback = Rc::new(RefCell::new(None));
         let repo_removed_callback: RepoRemovedCallback = Rc::new(RefCell::new(None));
+        let folder_dropped_callback: FolderDroppedCallback = Rc::new(RefCell::new(None));
 
         // Wire open button to the window's open action
         let window_for_open = window.clone();
@@ -83,11 +90,14 @@ impl WelcomeView {
             let _ = gtk::prelude::WidgetExt::activate_action(&window_for_open, "win.open", None);
         });
 
+        install_folder_drop_target(&welcome_page, folder_dropped_callback.clone());
+
         Self {
             widget: welcome_page,
             recent_repos_container,
             repo_clicked_callback,
             repo_removed_callback,
+            folder_dropped_callback,
         }
     }
 
@@ -100,6 +110,11 @@ impl WelcomeView {
     /// Set the callback invoked when a recent repository is removed.
     pub fn on_repo_removed<F: Fn() + 'static>(&self, callback: F) {
         *self.repo_removed_callback.borrow_mut() = Some(Box::new(callback));
+    }
+
+    /// Set the callback invoked when a local folder is dropped on the welcome screen.
+    pub fn on_folder_dropped<F: Fn(gio::File) + 'static>(&self, callback: F) {
+        *self.folder_dropped_callback.borrow_mut() = Some(Box::new(callback));
     }
 
     /// Refresh the recent repositories list.
@@ -286,5 +301,85 @@ impl WelcomeView {
         card.append(&inner);
 
         card
+    }
+}
+
+/// Accept a dropped folder URI (as `GdkFileList` or a single `GFile`) on `widget`.
+fn install_folder_drop_target(widget: &impl IsA<gtk::Widget>, callback: FolderDroppedCallback) {
+    let drop_target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    drop_target.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
+
+    drop_target.connect_drop(move |_, value, _, _| {
+        let Some(file) = directory_from_drop_value(value) else {
+            return false;
+        };
+        let Some(ref cb) = *callback.borrow() else {
+            return false;
+        };
+        cb(file);
+        true
+    });
+
+    widget.add_controller(drop_target);
+}
+
+/// First local directory in a drop payload, if any.
+fn directory_from_drop_value(value: &glib::Value) -> Option<gio::File> {
+    if let Ok(list) = value.get::<gdk::FileList>() {
+        return first_local_directory(list.files());
+    }
+    value
+        .get::<gio::File>()
+        .ok()
+        .and_then(|file| first_local_directory(std::iter::once(file)))
+}
+
+fn first_local_directory(files: impl IntoIterator<Item = gio::File>) -> Option<gio::File> {
+    files.into_iter().find(is_local_directory)
+}
+
+fn is_local_directory(file: &gio::File) -> bool {
+    file.query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
+        == gio::FileType::Directory
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_local_directory_skips_files_and_picks_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("readme.txt");
+        std::fs::write(&file_path, "hi").unwrap();
+
+        let chosen = first_local_directory([
+            gio::File::for_path(&file_path),
+            gio::File::for_path(dir.path()),
+        ]);
+
+        assert_eq!(
+            chosen.and_then(|f| f.path()),
+            Some(dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn first_local_directory_ignores_non_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("readme.txt");
+        std::fs::write(&file_path, "hi").unwrap();
+
+        assert!(first_local_directory([gio::File::for_path(&file_path)]).is_none());
+    }
+
+    #[test]
+    fn file_uri_round_trips_to_the_dropped_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = gio::File::for_path(dir.path());
+        let parsed = gio::File::for_uri(&file.uri());
+
+        assert_eq!(parsed.path().as_deref(), Some(dir.path()));
+        assert!(is_local_directory(&parsed));
     }
 }

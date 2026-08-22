@@ -1,5 +1,5 @@
 use gtk::{gio, glib, prelude::*};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -253,28 +253,8 @@ pub fn open_repo_dialog(
                                 // Convert URI to path - Url implements Display/Debug, convert to string
                                 let uri_str = uri.to_string();
                                 let file = gio::File::for_uri(&uri_str);
-                                if let Some(sandbox_path) = file.path() {
-                                    // Try to get the real path from the document portal extended attribute
-                                    // This works in Flatpak/sandboxed environments
-                                    let real_path = if let Ok(info) = file.query_info(
-                                        "xattr::document-portal.host-path",
-                                        gio::FileQueryInfoFlags::NONE,
-                                        gio::Cancellable::NONE,
-                                    ) {
-                                        if let Some(host_path) = info
-                                            .attribute_as_string("xattr::document-portal.host-path")
-                                        {
-                                            PathBuf::from(host_path)
-                                        } else {
-                                            sandbox_path.clone()
-                                        }
-                                    } else {
-                                        // Fallback: use sandbox path as real path
-                                        // This works for non-sandboxed environments where paths are the same
-                                        sandbox_path.clone()
-                                    };
-
-                                    let _ = tx.send(Ok((sandbox_path, real_path)));
+                                if let Some(paths) = paths_from_gio_file(&file) {
+                                    let _ = tx.send(Ok(paths));
                                 } else {
                                     let _ = tx.send(Err("Failed to get path from URI".to_string()));
                                 }
@@ -480,6 +460,111 @@ pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
     ui.repo_view.reset_diff(None);
 }
 
+/// Convert a local `GFile` (from the file portal or a drop) into the sandbox
+/// path used for Git operations and the host path used for display/recents.
+fn paths_from_gio_file(file: &gio::File) -> Option<(PathBuf, PathBuf)> {
+    let sandbox_path = file.path()?;
+    let real_path = file
+        .query_info(
+            "xattr::document-portal.host-path",
+            gio::FileQueryInfoFlags::NONE,
+            gio::Cancellable::NONE,
+        )
+        .ok()
+        .and_then(|info| info.attribute_as_string("xattr::document-portal.host-path"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| sandbox_path.clone());
+    Some((sandbox_path, real_path))
+}
+
+/// If `path` resolved to `repo_root` (possibly an ancestor), map a companion
+/// path (such as the host path in a sandbox) onto that same repository root.
+fn paths_for_discovered_repo(
+    path: &Path,
+    companion: &Path,
+    repo_root: &Path,
+) -> (PathBuf, PathBuf) {
+    let path: PathBuf = path.components().collect();
+    let companion: PathBuf = companion.components().collect();
+    let repo_root: PathBuf = repo_root.components().collect();
+
+    if path == companion {
+        return (repo_root.clone(), repo_root);
+    }
+
+    let companion_root = match path.strip_prefix(&repo_root) {
+        Ok(relative) if relative.as_os_str().is_empty() => companion,
+        Ok(relative) => {
+            let mut companion_root = companion;
+            for _ in relative.components() {
+                if !companion_root.pop() {
+                    return (repo_root.clone(), repo_root);
+                }
+            }
+            companion_root
+        }
+        Err(_) => companion,
+    };
+    (repo_root, companion_root)
+}
+
+/// Open a repository from a dropped (or otherwise provided) folder URI.
+///
+/// Discovers the worktree root from `file`, then loads it the same way as
+/// opening from a CLI path.
+pub fn open_repo_from_gio_file(
+    window: &gtk::ApplicationWindow,
+    ui: &WindowUi,
+    state: &AppState,
+    app_name: &str,
+    file: &gio::File,
+) {
+    let Some((sandbox_path, real_path)) = paths_from_gio_file(file) else {
+        show_repo_error(
+            window,
+            &PathBuf::from(file.uri().as_str()),
+            "Only local folders can be opened.",
+        );
+        return;
+    };
+
+    let Some(repo_root) = git::discover_repository_root(&sandbox_path) else {
+        show_repo_error(
+            window,
+            &sandbox_path,
+            "No Git repository was found in this folder or its parents.",
+        );
+        return;
+    };
+
+    if let Err(e) = git::validate_repository(&repo_root) {
+        show_repo_error(window, &repo_root, &e.to_string());
+        return;
+    }
+
+    let (sandbox_root, real_root) =
+        paths_for_discovered_repo(&sandbox_path, &real_path, &repo_root);
+
+    if state.current_path.borrow().is_some() {
+        reset_for_repo_switch(ui, state);
+    }
+
+    let started_at = Instant::now();
+    ui.repo_view
+        .commit_paging_state
+        .borrow_mut()
+        .pending_first_page_log = Some((
+        started_at,
+        sandbox_root.clone(),
+        "Open repo from dropped folder -> rendered on screen".to_string(),
+    ));
+
+    recent_repos::add_recent_repo(&sandbox_root, &real_root);
+    load_repo(ui, state, app_name, sandbox_root, None);
+    ui.set_repo_controls_visible(true);
+    ui.show_main();
+}
+
 pub fn maybe_load_repo_from_cwd(
     window: &gtk::ApplicationWindow,
     ui: &WindowUi,
@@ -520,4 +605,47 @@ pub fn maybe_load_repo_from_cwd(
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_for_discovered_repo_uses_root_when_path_and_companion_match() {
+        let repo = PathBuf::from("/home/me/proj");
+        let nested = repo.join("src");
+        let (sandbox, real) = paths_for_discovered_repo(&nested, &nested, &repo);
+        assert_eq!(sandbox, repo);
+        assert_eq!(real, repo);
+    }
+
+    #[test]
+    fn paths_for_discovered_repo_keeps_host_path_when_drop_is_the_repo() {
+        let sandbox = PathBuf::from("/run/user/1000/doc/abc");
+        let host = PathBuf::from("/home/me/proj");
+        let (sandbox_root, real_root) = paths_for_discovered_repo(&sandbox, &host, &sandbox);
+        assert_eq!(sandbox_root, sandbox);
+        assert_eq!(real_root, host);
+    }
+
+    #[test]
+    fn paths_for_discovered_repo_walks_host_path_when_drop_is_nested() {
+        let sandbox_root = PathBuf::from("/run/user/1000/doc/abc");
+        let sandbox_nested = sandbox_root.join("src");
+        let host_nested = PathBuf::from("/home/me/proj/src");
+        let (sandbox, real) =
+            paths_for_discovered_repo(&sandbox_nested, &host_nested, &sandbox_root);
+        assert_eq!(sandbox, sandbox_root);
+        assert_eq!(real, PathBuf::from("/home/me/proj"));
+    }
+
+    #[test]
+    fn paths_from_gio_file_uses_local_path_when_no_portal_xattr() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = gio::File::for_path(dir.path());
+        let (sandbox, real) = paths_from_gio_file(&file).unwrap();
+        assert_eq!(sandbox, real);
+        assert_eq!(sandbox, dir.path());
+    }
 }
