@@ -31,6 +31,11 @@
       <summary>Recent repositories</summary>
       <description>JSON array of recent repository entries with real_path and sandbox_path</description>
     </key>
+    <key name="last-session-repository" type="s">
+      <default>""</default>
+      <summary>Last session repository</summary>
+      <description>JSON object with real_path and sandbox_path for the repository open when the last window closed, or empty if none</description>
+    </key>
     <key name="branches-expanded" type="b">
       <default>true</default>
       <summary>Branches section expanded</summary>

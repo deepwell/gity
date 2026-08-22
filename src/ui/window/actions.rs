@@ -140,10 +140,18 @@ pub fn setup_app_action(app: &adw::Application) {
         })
         .build();
 
-    let app_clone_quit = app.clone();
+    // Close windows instead of Application::quit() so each window's
+    // close_request runs (geometry + last-session-repository persistence).
     let action_quit = ActionEntry::builder("quit")
-        .activate(move |_, _, _| {
-            app_clone_quit.quit();
+        .activate(|app: &adw::Application, _, _| {
+            let windows = app.windows();
+            if windows.is_empty() {
+                app.quit();
+                return;
+            }
+            for window in windows {
+                window.close();
+            }
         })
         .build();
 

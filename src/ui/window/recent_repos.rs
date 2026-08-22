@@ -135,3 +135,58 @@ pub fn remove_recent_repo(path: &PathBuf) {
         let _ = settings.set_string("recent-repositories", &json);
     }
 }
+
+/// Persist the repository that was open when the last window closed.
+///
+/// Looks up `sandbox_path` in the recent list to recover `real_path`; if missing,
+/// stores both fields as the same path.
+pub fn save_last_session(sandbox_path: &PathBuf) {
+    let settings = gio::Settings::new(APP_ID);
+    let sandbox_str = strip_trailing_slash(&sandbox_path.to_string_lossy()).to_string();
+
+    let recent_json = settings.string("recent-repositories");
+    let entries: Vec<RecentRepoEntry> =
+        serde_json::from_str(&recent_json).unwrap_or_else(|_| Vec::new());
+
+    let real_str = entries
+        .iter()
+        .find(|e| e.sandbox_path == sandbox_str)
+        .map(|e| e.real_path.clone())
+        .unwrap_or_else(|| sandbox_str.clone());
+
+    let entry = RecentRepoEntry {
+        real_path: real_str,
+        sandbox_path: sandbox_str,
+    };
+
+    if let Ok(json) = serde_json::to_string(&entry) {
+        let _ = settings.set_string("last-session-repository", &json);
+    }
+}
+
+/// Clear the saved last-session repository (e.g. last window was on welcome).
+pub fn clear_last_session() {
+    let settings = gio::Settings::new(APP_ID);
+    let _ = settings.set_string("last-session-repository", "");
+}
+
+/// Load the last-session repository if it still exists and is a valid git repo.
+///
+/// Returns `(sandbox_path, real_path)` suitable for `load_repo` / `add_recent_repo`.
+pub fn load_last_session() -> Option<(PathBuf, PathBuf)> {
+    let settings = gio::Settings::new(APP_ID);
+    let json_str = settings.string("last-session-repository");
+    if json_str.is_empty() {
+        return None;
+    }
+
+    let entry: RecentRepoEntry = serde_json::from_str(&json_str).ok()?;
+    let sandbox_path = PathBuf::from(&entry.sandbox_path);
+    let real_path = PathBuf::from(&entry.real_path);
+
+    if sandbox_path.exists() && git::validate_repository(&sandbox_path).is_ok() {
+        Some((sandbox_path, real_path))
+    } else {
+        None
+    }
+}

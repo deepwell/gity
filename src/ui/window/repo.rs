@@ -519,7 +519,5 @@ pub fn maybe_load_repo_from_cwd(
         }
     }
 
-    ui.set_repo_controls_visible(false);
-    ui.show_welcome();
     false
 }

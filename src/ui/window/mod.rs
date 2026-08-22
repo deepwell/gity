@@ -183,8 +183,22 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
     // Save state when window is closed
     let settings_close = settings_for_save.clone();
     let restoring_close = restoring.clone();
+    let state_for_close = app_state.clone();
+    let window_for_app = window.clone();
     window.connect_close_request(move |win| {
         save_state(win, &settings_close, &restoring_close);
+
+        // Persist last-session repo only when this is the final window.
+        if let Some(app) = window_for_app.application() {
+            if app.windows().len() == 1 {
+                if let Some(path) = state_for_close.current_path.borrow().clone() {
+                    recent_repos::save_last_session(&path);
+                } else {
+                    recent_repos::clear_last_session();
+                }
+            }
+        }
+
         glib::Propagation::Proceed
     });
 
@@ -247,8 +261,34 @@ pub fn build_ui(application: &adw::Application, repo_path_from_args: Option<&std
     }
 
     // Auto-open repo from CWD if applicable (only for initial launch, not new windows)
-    let _loaded = repo::maybe_load_repo_from_cwd(&window, &ui, &app_state, APP_NAME);
+    if repo::maybe_load_repo_from_cwd(&window, &ui, &app_state, APP_NAME) {
+        window.present();
+        return;
+    }
 
+    // Restore the repository that was open when the last window closed
+    if let Some((sandbox_path, real_path)) = recent_repos::load_last_session() {
+        use std::time::Instant;
+        let started_at = Instant::now();
+        ui.repo_view
+            .commit_paging_state
+            .borrow_mut()
+            .pending_first_page_log = Some((
+            started_at,
+            sandbox_path.clone(),
+            "Restore last-session repo -> rendered on screen".to_string(),
+        ));
+
+        recent_repos::add_recent_repo(&sandbox_path, &real_path);
+        ui.set_repo_controls_visible(true);
+        ui.show_main();
+        repo::load_repo(&ui, &app_state, APP_NAME, sandbox_path, None);
+        window.present();
+        return;
+    }
+
+    ui.set_repo_controls_visible(false);
+    ui.show_welcome();
     window.present();
 }
 
