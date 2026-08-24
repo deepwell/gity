@@ -960,118 +960,118 @@ fn load_range_diff(
     newest_sha: &str,
     count: usize,
 ) {
-    if let Some(ref path) = *state.current_path.borrow() {
-        ui.repo_view.set_diff_chrome_visible(true);
-        set_diff_skeleton(&ui.repo_view.diff_files_box);
-        set_metadata_skeleton(
-            &ui.repo_view.diff_metadata_label,
-            &ui.repo_view.diff_sha_row,
-            &ui.repo_view.commit_message_label,
-        );
-        ui.repo_view.expand_label.set_visible(false);
-        ui.repo_view.reset_commit_message_expansion();
-        update_expand_collapse_buttons(
-            &ui.repo_view.diff_files_box,
-            &ui.repo_view.diff_expand_all_button,
-            &ui.repo_view.diff_collapse_all_button,
-        );
+    let Some(ref path) = *state.current_path.borrow() else {
+        return;
+    };
 
-        let diff_files_box_clone = ui.repo_view.diff_files_box.clone();
-        let expand_btn = ui.repo_view.diff_expand_all_button.clone();
-        let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
-        let path_clone = path.clone();
-        let oldest = oldest_sha.to_string();
-        let newest = newest_sha.to_string();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let diff_result = git::get_range_diff(path_clone.to_str().unwrap(), &oldest, &newest);
-            let _ = tx.send(diff_result);
-        });
-        poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
+    ui.repo_view.set_diff_chrome_visible(true);
+    set_diff_skeleton(&ui.repo_view.diff_files_box);
+    set_metadata_skeleton(
+        &ui.repo_view.diff_metadata_label,
+        &ui.repo_view.diff_sha_row,
+        &ui.repo_view.commit_message_label,
+    );
+    ui.repo_view.expand_label.set_visible(false);
+    ui.repo_view.reset_commit_message_expansion();
+    update_expand_collapse_buttons(
+        &ui.repo_view.diff_files_box,
+        &ui.repo_view.diff_expand_all_button,
+        &ui.repo_view.diff_collapse_all_button,
+    );
 
-        clear_metadata_skeleton(
-            &ui.repo_view.diff_metadata_label,
-            &ui.repo_view.commit_message_label,
-        );
-        ui.repo_view
-            .diff_metadata_label
-            .set_text(&format!("{count} commits selected"));
-        let short_oldest = oldest_sha.get(..7).unwrap_or(oldest_sha);
-        let short_newest = newest_sha.get(..7).unwrap_or(newest_sha);
-        ui.repo_view
-            .diff_sha_label
-            .set_text(&format!(" {short_oldest}..{short_newest}"));
-        *ui.repo_view.diff_sha_copy_text.borrow_mut() = format!("{oldest_sha}..{newest_sha}");
-        ui.repo_view.diff_sha_row.set_visible(true);
-        ui.repo_view.commit_message_label.set_text("");
-        *ui.repo_view.full_message.borrow_mut() = String::new();
-    } else {
-        ui.repo_view.reset_diff(Some("No repository loaded"));
-    }
+    let diff_files_box_clone = ui.repo_view.diff_files_box.clone();
+    let expand_btn = ui.repo_view.diff_expand_all_button.clone();
+    let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
+    let path_clone = path.clone();
+    let oldest = oldest_sha.to_string();
+    let newest = newest_sha.to_string();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let diff_result = git::get_range_diff(path_clone.to_str().unwrap(), &oldest, &newest);
+        let _ = tx.send(diff_result);
+    });
+    poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
+
+    clear_metadata_skeleton(
+        &ui.repo_view.diff_metadata_label,
+        &ui.repo_view.commit_message_label,
+    );
+    ui.repo_view
+        .diff_metadata_label
+        .set_text(&format!("{count} commits selected"));
+    let short_oldest = oldest_sha.get(..7).unwrap_or(oldest_sha);
+    let short_newest = newest_sha.get(..7).unwrap_or(newest_sha);
+    ui.repo_view
+        .diff_sha_label
+        .set_text(&format!(" {short_oldest}..{short_newest}"));
+    *ui.repo_view.diff_sha_copy_text.borrow_mut() = format!("{oldest_sha}..{newest_sha}");
+    ui.repo_view.diff_sha_row.set_visible(true);
+    ui.repo_view.commit_message_label.set_text("");
+    *ui.repo_view.full_message.borrow_mut() = String::new();
 }
 
 fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
-    if let Some(ref path) = *state.current_path.borrow() {
-        ui.repo_view.set_diff_chrome_visible(true);
-        // Show skeleton loading state
-        set_diff_skeleton(&ui.repo_view.diff_files_box);
-        set_metadata_skeleton(
-            &ui.repo_view.diff_metadata_label,
-            &ui.repo_view.diff_sha_row,
-            &ui.repo_view.commit_message_label,
-        );
-        ui.repo_view.expand_label.set_visible(false);
-        ui.repo_view.reset_commit_message_expansion();
-        update_expand_collapse_buttons(
-            &ui.repo_view.diff_files_box,
-            &ui.repo_view.diff_expand_all_button,
-            &ui.repo_view.diff_collapse_all_button,
-        );
+    let Some(ref path) = *state.current_path.borrow() else {
+        return;
+    };
 
-        // Load diff in background thread
-        let diff_files_box_clone = ui.repo_view.diff_files_box.clone();
-        let expand_btn = ui.repo_view.diff_expand_all_button.clone();
-        let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
-        let path_clone = path.clone();
-        let sha_clone = commit_sha.to_string();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let diff_result = git::get_commit_diff(path_clone.to_str().unwrap(), &sha_clone);
-            let _ = tx.send(diff_result);
-        });
-        poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
+    ui.repo_view.set_diff_chrome_visible(true);
+    // Show skeleton loading state
+    set_diff_skeleton(&ui.repo_view.diff_files_box);
+    set_metadata_skeleton(
+        &ui.repo_view.diff_metadata_label,
+        &ui.repo_view.diff_sha_row,
+        &ui.repo_view.commit_message_label,
+    );
+    ui.repo_view.expand_label.set_visible(false);
+    ui.repo_view.reset_commit_message_expansion();
+    update_expand_collapse_buttons(
+        &ui.repo_view.diff_files_box,
+        &ui.repo_view.diff_expand_all_button,
+        &ui.repo_view.diff_collapse_all_button,
+    );
 
-        // Load metadata in background thread
-        let metadata_label_clone = ui.repo_view.diff_metadata_label.clone();
-        let sha_row_clone = ui.repo_view.diff_sha_row.clone();
-        let sha_label_clone = ui.repo_view.diff_sha_label.clone();
-        let sha_copy_text_clone = ui.repo_view.diff_sha_copy_text.clone();
-        let commit_message_label_clone = ui.repo_view.commit_message_label.clone();
-        let expand_label_clone = ui.repo_view.expand_label.clone();
-        let full_message_clone = ui.repo_view.full_message.clone();
-        let is_expanded_clone = ui.repo_view.is_expanded.clone();
-        let path_clone_meta = path.clone();
-        let sha_clone_meta = commit_sha.to_string();
-        let (tx_meta, rx_meta) = mpsc::channel();
-        std::thread::spawn(move || {
-            let metadata_result =
-                git::get_commit_metadata(path_clone_meta.to_str().unwrap(), &sha_clone_meta);
-            let _ = tx_meta.send(metadata_result);
-        });
-        poll_metadata_result(
-            rx_meta,
-            metadata_label_clone,
-            sha_row_clone,
-            sha_label_clone,
-            sha_copy_text_clone,
-            commit_message_label_clone,
-            expand_label_clone,
-            full_message_clone,
-            is_expanded_clone,
-        );
-    } else {
-        ui.repo_view.reset_diff(Some("No repository loaded"));
-    }
+    // Load diff in background thread
+    let diff_files_box_clone = ui.repo_view.diff_files_box.clone();
+    let expand_btn = ui.repo_view.diff_expand_all_button.clone();
+    let collapse_btn = ui.repo_view.diff_collapse_all_button.clone();
+    let path_clone = path.clone();
+    let sha_clone = commit_sha.to_string();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let diff_result = git::get_commit_diff(path_clone.to_str().unwrap(), &sha_clone);
+        let _ = tx.send(diff_result);
+    });
+    poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
+
+    // Load metadata in background thread
+    let metadata_label_clone = ui.repo_view.diff_metadata_label.clone();
+    let sha_row_clone = ui.repo_view.diff_sha_row.clone();
+    let sha_label_clone = ui.repo_view.diff_sha_label.clone();
+    let sha_copy_text_clone = ui.repo_view.diff_sha_copy_text.clone();
+    let commit_message_label_clone = ui.repo_view.commit_message_label.clone();
+    let expand_label_clone = ui.repo_view.expand_label.clone();
+    let full_message_clone = ui.repo_view.full_message.clone();
+    let is_expanded_clone = ui.repo_view.is_expanded.clone();
+    let path_clone_meta = path.clone();
+    let sha_clone_meta = commit_sha.to_string();
+    let (tx_meta, rx_meta) = mpsc::channel();
+    std::thread::spawn(move || {
+        let metadata_result =
+            git::get_commit_metadata(path_clone_meta.to_str().unwrap(), &sha_clone_meta);
+        let _ = tx_meta.send(metadata_result);
+    });
+    poll_metadata_result(
+        rx_meta,
+        metadata_label_clone,
+        sha_row_clone,
+        sha_label_clone,
+        sha_copy_text_clone,
+        commit_message_label_clone,
+        expand_label_clone,
+        full_message_clone,
+        is_expanded_clone,
+    );
 }
 
 pub fn connect(ui: &WindowUi, state: &AppState) {
@@ -1115,9 +1115,17 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
             let commit_list = &ui_for_selection.repo_view.commit_list;
             let indices = commit_list.selected_indices();
             if indices.is_empty() {
-                ui_for_selection
-                    .repo_view
-                    .reset_diff(Some("Select a commit (or a range) to view the commit diff"));
+                // No path: leave the current diff in place for the close crossfade.
+                // Empty list: first page is still loading — don't flash a message.
+                if state_for_selection.current_path.borrow().is_some() {
+                    if commit_list.store.n_items() == 0 {
+                        ui_for_selection.repo_view.reset_diff(None);
+                    } else {
+                        ui_for_selection.repo_view.reset_diff(Some(
+                            "Select a commit (or a range) to view the commit diff",
+                        ));
+                    }
+                }
             } else if indices.len() == 1 {
                 if let Some(sha) = commit_list.selected_commit_sha() {
                     load_commit_diff(&ui_for_selection, &state_for_selection, &sha);

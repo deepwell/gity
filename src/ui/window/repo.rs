@@ -60,6 +60,11 @@ pub fn load_repo_with_selection(
 
     *state.current_path.borrow_mut() = Some(path.clone());
 
+    // Commits (and the first-commit diff) load asynchronously. Start from a
+    // blank diff so a leftover empty-state placeholder cannot flash during
+    // the welcome→repo crossfade.
+    ui.repo_view.reset_diff(None);
+
     let checked_out_branch = git::checked_out_branch_name(&path);
     let mut effective_ref = ref_name.unwrap_or_else(|| git::default_branch_ref(&path));
 
@@ -421,37 +426,37 @@ pub fn refresh_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
 pub fn close_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     state.clear_repo();
     ui.reset_title(app_name);
-
-    ui.repo_view.commit_list.clear();
-    ui.repo_view
-        .branch_panel
-        .update_refs(&[], &[], &[], None, None);
-
-    // Reset search UI
-    ui.repo_view.search_bar.set_search_mode(false);
-    ui.repo_view.search_entry.set_text("");
-    ui.repo_view.search_status_label.set_text("");
-    ui.repo_view.last_search_status.borrow_mut().clear();
-
-    ui.repo_view.reset_diff(Some("No repository loaded"));
-
-    // Switch back to welcome screen and hide repo-only controls
     ui.set_repo_controls_visible(false);
     ui.refresh_recent_repos();
     ui.show_welcome();
+
+    // Tear down the repo view after the welcome crossfade so the outgoing
+    // frame is still the real repository, not an empty-state placeholder.
+    let ui = ui.clone();
+    let state = state.clone();
+    let delay_ms = ui.stack.transition_duration().saturating_add(50);
+    glib::timeout_add_local_once(Duration::from_millis(delay_ms.into()), move || {
+        if state.current_path.borrow().is_none() {
+            reset_repo_view(&ui);
+        }
+    });
 }
 
 pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
     // Clear the old repo state; `load_repo` will set the new path.
     state.clear_repo();
+    reset_repo_view(ui);
+}
 
-    // Clear panels while the new repo loads.
+/// Clear commit/branch/search/diff widgets. Used when leaving a repository or
+/// switching to a different one. Does not show an empty-state message: those
+/// flash during the welcome↔repo crossfade.
+fn reset_repo_view(ui: &WindowUi) {
     ui.repo_view.commit_list.clear();
     ui.repo_view
         .branch_panel
         .update_refs(&[], &[], &[], None, None);
 
-    // Reset search UI.
     ui.repo_view.search_bar.set_search_mode(false);
     ui.repo_view.search_entry.set_text("");
     ui.repo_view.search_status_label.set_text("");

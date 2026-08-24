@@ -99,8 +99,14 @@ impl WindowUi {
 
         window.set_titlebar(Some(&header_bar));
 
-        // Root stack holds either welcome or main UI
-        let stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
+        // Root stack holds either welcome or main UI. A crossfade smooths the
+        // otherwise-instant swap between the welcome and repository screens.
+        let stack = gtk::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(200)
+            .build();
         window.set_child(Some(&stack));
 
         // Repository view (search + panels + diff)
