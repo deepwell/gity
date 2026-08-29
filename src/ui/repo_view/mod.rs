@@ -27,12 +27,17 @@ pub struct RepoView {
 
     // Diff UI
     pub diff_files_box: gtk::Box,
-    /// Header row holding the "Commit Diff" metadata label and expand/collapse
-    /// buttons. Hidden while the diff placeholder is shown.
+    /// Header row holding the author avatar, commit title and metadata subtitle.
+    /// Hidden while the diff placeholder is shown.
     pub diff_header: gtk::Box,
     /// Container for the commit message + "Show more" toggle. Hidden while the
     /// diff placeholder is shown.
     pub commit_message_container: gtk::Box,
+    /// Circular avatar showing the author's initials.
+    pub diff_avatar_label: gtk::Label,
+    /// Bold commit subject (first line of the commit message).
+    pub commit_title_label: gtk::Label,
+    /// Metadata subtitle: author name plus authored/committed dates.
     pub diff_metadata_label: gtk::Label,
     pub diff_sha_row: gtk::Box,
     pub diff_sha_label: gtk::Label,
@@ -74,7 +79,9 @@ impl RepoView {
         // whole diff view; they're shown again when an actual diff loads.
         self.set_diff_chrome_visible(false);
 
-        self.diff_metadata_label.set_text("Commit Diff");
+        self.commit_title_label.set_text("Commit Diff");
+        self.diff_metadata_label.set_text("");
+        self.diff_avatar_label.set_text("");
         self.diff_sha_row.set_visible(false);
         self.commit_message_label.set_text("");
         self.expand_label.set_visible(false);
@@ -230,20 +237,38 @@ impl RepoView {
         diff_scrolled_window.set_vexpand(true);
         diff_scrolled_window.set_hexpand(true);
 
-        let diff_metadata_label = gtk::Label::builder()
+        // Circular avatar showing the author's initials (e.g. "MD").
+        let diff_avatar_label = gtk::Label::builder()
+            .label("")
+            .width_request(36)
+            .height_request(36)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
+            .build();
+        diff_avatar_label.add_css_class("commit-avatar");
+
+        // Bold commit subject (first line of the commit message).
+        let commit_title_label = gtk::Label::builder()
             .label("Commit Diff")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .selectable(true)
+            .xalign(0.0)
+            .build();
+        commit_title_label.add_css_class("commit-title");
+
+        // Metadata subtitle: author name + authored/committed dates.
+        let diff_metadata_label = gtk::Label::builder()
+            .label("")
             .halign(gtk::Align::Start)
             .selectable(true)
             .build();
         diff_metadata_label.set_xalign(0.0);
+        diff_metadata_label.add_css_class("dim-label");
 
-        let diff_metadata_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(0)
-            .hexpand(true)
-            .build();
-        diff_metadata_box.set_halign(gtk::Align::Start);
-
+        // Commit SHA, shown inline right after the authored/committed dates.
         let diff_sha_copy_row = copy_on_hover::CopyOnHoverRow::new(
             "",
             String::new(),
@@ -257,15 +282,32 @@ impl RepoView {
         let diff_sha_copy_text = diff_sha_copy_row.copy_text.clone();
         diff_sha_row.set_visible(false);
 
-        diff_metadata_box.append(&diff_metadata_label);
-        diff_metadata_box.append(&diff_sha_row);
+        // Subtitle row: dates on the left, SHA immediately after.
+        let commit_subtitle_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::Start)
+            .build();
+        commit_subtitle_row.append(&diff_metadata_label);
+        commit_subtitle_row.append(&diff_sha_row);
 
-        // Diff header controls
+        let commit_header_text = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .valign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        commit_header_text.append(&commit_title_label);
+        commit_header_text.append(&commit_subtitle_row);
+
+        // Expand/collapse controls, floated to the top-right of the metadata so
+        // the title/subtitle text can use the full width and flow around them.
         let diff_expand_all_button = gtk::Button::builder()
             .label("Expand all")
             .tooltip_text("Expand all file diffs")
             .build();
         diff_expand_all_button.add_css_class("flat");
+        diff_expand_all_button.add_css_class("commit-control-button");
         diff_expand_all_button.set_sensitive(false);
 
         let diff_collapse_all_button = gtk::Button::builder()
@@ -273,21 +315,38 @@ impl RepoView {
             .tooltip_text("Collapse all file diffs")
             .build();
         diff_collapse_all_button.add_css_class("flat");
+        diff_collapse_all_button.add_css_class("commit-control-button");
         diff_collapse_all_button.set_sensitive(false);
 
+        let diff_controls = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Start)
+            .build();
+        diff_controls.add_css_class("commit-controls");
+        diff_controls.append(&diff_expand_all_button);
+        diff_controls.append(&diff_collapse_all_button);
+
+        // Overlay the controls on top of the metadata text at the top-right.
+        let diff_header_overlay = gtk::Overlay::builder().hexpand(true).build();
+        diff_header_overlay.set_child(Some(&commit_header_text));
+        diff_header_overlay.add_overlay(&diff_controls);
+
+        // Diff header: avatar on the left, title + subtitle (with the controls
+        // floated at the top-right) on the right.
         let diff_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .margin_start(10)
             .margin_end(10)
             .margin_top(10)
             .margin_bottom(5)
-            .spacing(8)
+            .spacing(12)
             // Hidden initially; the diff view starts on the placeholder state.
             .visible(false)
             .build();
-        diff_header.append(&diff_metadata_box);
-        diff_header.append(&diff_expand_all_button);
-        diff_header.append(&diff_collapse_all_button);
+        diff_header.append(&diff_avatar_label);
+        diff_header.append(&diff_header_overlay);
 
         let commit_message_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -444,6 +503,8 @@ impl RepoView {
             diff_files_box,
             diff_header,
             commit_message_container,
+            diff_avatar_label,
+            commit_title_label,
             diff_metadata_label,
             diff_sha_row,
             diff_sha_label,

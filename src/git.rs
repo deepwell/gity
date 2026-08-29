@@ -458,6 +458,12 @@ fn format_datetime(time: &Time) -> String {
     dt.format("%b %d, %Y %H:%M").to_string()
 }
 
+/// Compact date used in the commit header subtitle, e.g. `Aug 23, 17:02`.
+fn format_datetime_short(time: &Time) -> String {
+    let dt = Local.timestamp_opt(time.seconds(), 0).unwrap();
+    dt.format("%b %d, %H:%M").to_string()
+}
+
 fn git_time_to_utc(time: Time) -> DateTime<Utc> {
     Utc.timestamp_opt(time.seconds(), 0).unwrap()
 }
@@ -592,7 +598,6 @@ pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
 
 pub struct CommitMetadata {
     pub author_name: String,
-    pub author_email: String,
     pub date_time: String,
     /// Committer date, only set when it differs from the author date.
     pub commit_date_time: Option<String>,
@@ -607,9 +612,8 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
 
     let author = commit.author();
     let author_name = author.name().unwrap_or("").to_string();
-    let author_email = author.email().unwrap_or("").to_string();
-    let date_time = format_datetime(&author.when());
-    let committer_date_time = format_datetime(&commit.committer().when());
+    let date_time = format_datetime_short(&author.when());
+    let committer_date_time = format_datetime_short(&commit.committer().when());
     let commit_date_time = if committer_date_time != date_time {
         Some(committer_date_time)
     } else {
@@ -620,7 +624,6 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
 
     Ok(CommitMetadata {
         author_name,
-        author_email,
         date_time,
         commit_date_time,
         commit_message,
@@ -880,7 +883,7 @@ mod tests {
         assert_ne!(commit_date_time, meta.date_time);
         assert_eq!(
             commit_date_time,
-            format_datetime(&Time::new(1_700_086_400, 0))
+            format_datetime_short(&Time::new(1_700_086_400, 0))
         );
     }
 

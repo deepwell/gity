@@ -42,6 +42,33 @@ textview.diff-view text {
 .welcome-drop-target:drop(active) {
   background-color: alpha(@accent_bg_color, 0.08);
 }
+
+/* Circular author avatar in the commit metadata header */
+.commit-avatar {
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: 9999px;
+  background-color: alpha(@accent_bg_color, 0.25);
+  color: @accent_color;
+  font-weight: bold;
+}
+
+/* Bold commit subject (first line of the message) in the header */
+.commit-title {
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+/* Expand/collapse controls float over the metadata text, so give the wrapper
+   the panel's background color to occlude any text behind them. */
+.commit-controls {
+  background-color: @window_bg_color;
+  border-radius: 6px;
+}
+
+.commit-control-button:hover {
+  background-color: shade(@window_bg_color, 0.92);
+}
 "#,
     );
 

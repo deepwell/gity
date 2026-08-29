@@ -201,27 +201,62 @@ fn set_diff_skeleton(container: &gtk::Box) {
     }
 }
 
-/// Shows skeleton loading state for author/metadata label
+/// Shows skeleton loading state for the commit title, metadata subtitle and body.
 fn set_metadata_skeleton(
+    title_label: &gtk::Label,
     metadata_label: &gtk::Label,
+    avatar_label: &gtk::Label,
     sha_row: &gtk::Box,
     message_label: &gtk::Label,
 ) {
+    title_label.set_text("\u{00A0}");
+    title_label.add_css_class("skeleton");
+    title_label.set_width_request(400);
+
+    avatar_label.set_text("");
+    avatar_label.add_css_class("skeleton");
+
     metadata_label.set_text("\u{00A0}");
     metadata_label.add_css_class("skeleton");
-    metadata_label.set_width_request(400);
+    metadata_label.set_width_request(300);
     sha_row.set_visible(false);
 
     // Also show skeleton for commit message
+    message_label.set_visible(true);
     message_label.set_text("\u{00A0}\n\u{00A0}\n\u{00A0}");
     message_label.add_css_class("skeleton");
 }
 
 /// Removes skeleton styling from metadata labels
-fn clear_metadata_skeleton(metadata_label: &gtk::Label, message_label: &gtk::Label) {
+fn clear_metadata_skeleton(
+    title_label: &gtk::Label,
+    metadata_label: &gtk::Label,
+    avatar_label: &gtk::Label,
+    message_label: &gtk::Label,
+) {
+    title_label.remove_css_class("skeleton");
+    title_label.set_width_request(-1);
+    avatar_label.remove_css_class("skeleton");
     metadata_label.remove_css_class("skeleton");
     metadata_label.set_width_request(-1);
     message_label.remove_css_class("skeleton");
+}
+
+/// Computes up to two uppercase initials for an author avatar (e.g. "Mark
+/// Deepwell" -> "MD", "mark" -> "MA").
+fn author_initials(name: &str) -> String {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let initials: String = match words.as_slice() {
+        [] => String::new(),
+        [single] => single.chars().take(2).collect(),
+        [first, second, ..] => first
+            .chars()
+            .next()
+            .into_iter()
+            .chain(second.chars().next())
+            .collect(),
+    };
+    initials.to_uppercase()
 }
 
 /// Returns `(any_expanded, any_collapsed)` across all file expanders.
@@ -873,6 +908,21 @@ fn poll_diff_result(
     }
 }
 
+/// Splits a commit message into its subject (first line) and body (the
+/// remaining lines with the leading blank separator removed). The subject is
+/// rendered as the header title, so the body must not repeat it.
+fn split_commit_message(message: &str) -> (String, String) {
+    let mut lines = message.lines();
+    let subject = lines.next().unwrap_or("").to_string();
+    let body = lines
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_start_matches('\n')
+        .trim_end()
+        .to_string();
+    (subject, body)
+}
+
 // Helper to truncate message to first N lines
 fn truncate_to_lines(text: &str, max_lines: usize) -> (String, bool) {
     let lines: Vec<&str> = text.lines().collect();
@@ -886,12 +936,16 @@ fn truncate_to_lines(text: &str, max_lines: usize) -> (String, bool) {
 }
 
 // Helper function to poll metadata channel and update labels
+#[allow(clippy::too_many_arguments)]
 fn poll_metadata_result(
     rx: mpsc::Receiver<Result<git::CommitMetadata, git2::Error>>,
+    title_label: gtk::Label,
     metadata_label: gtk::Label,
+    avatar_label: gtk::Label,
     sha_row: gtk::Box,
     sha_label: gtk::Label,
     sha_copy_text: std::rc::Rc<std::cell::RefCell<String>>,
+    message_container: gtk::Box,
     commit_message_label: gtk::Label,
     expand_label: gtk::Label,
     full_message: std::rc::Rc<std::cell::RefCell<String>>,
@@ -899,31 +953,43 @@ fn poll_metadata_result(
 ) {
     match rx.try_recv() {
         Ok(Ok(metadata)) => {
-            clear_metadata_skeleton(&metadata_label, &commit_message_label);
+            clear_metadata_skeleton(
+                &title_label,
+                &metadata_label,
+                &avatar_label,
+                &commit_message_label,
+            );
 
-            let label_text = match &metadata.commit_date_time {
+            let (title, body) = split_commit_message(&metadata.commit_message);
+            title_label.set_text(&title);
+            avatar_label.set_text(&author_initials(&metadata.author_name));
+            avatar_label.set_visible(true);
+
+            let subtitle = match &metadata.commit_date_time {
                 Some(commit_date_time) => format!(
-                    "{} <{}> - authored {} - committed {} - ",
-                    metadata.author_name,
-                    metadata.author_email,
-                    metadata.date_time,
-                    commit_date_time
+                    "{} \u{00B7} authored {} \u{00B7} committed {}",
+                    metadata.author_name, metadata.date_time, commit_date_time
                 ),
                 None => format!(
-                    "{} <{}> - {} - ",
-                    metadata.author_name, metadata.author_email, metadata.date_time
+                    "{} \u{00B7} authored {}",
+                    metadata.author_name, metadata.date_time
                 ),
             };
-            metadata_label.set_text(&label_text);
+            metadata_label.set_text(&subtitle);
 
             sha_label.set_text(&metadata.git_sha);
             *sha_copy_text.borrow_mut() = metadata.git_sha.clone();
             sha_row.set_visible(true);
 
-            *full_message.borrow_mut() = metadata.commit_message.clone();
+            // The subject is already shown as the title, so the body only holds
+            // the remaining lines to avoid printing the first line twice. When
+            // there is no body, hide the whole container so it contributes no
+            // empty space between the header and the footer.
+            *full_message.borrow_mut() = body.clone();
             *is_expanded.borrow_mut() = false;
 
-            let (truncated, has_more) = truncate_to_lines(&metadata.commit_message, 5);
+            message_container.set_visible(!body.is_empty());
+            let (truncated, has_more) = truncate_to_lines(&body, 5);
             commit_message_label.set_text(&truncated);
             expand_label.set_visible(has_more);
             if has_more {
@@ -931,13 +997,21 @@ fn poll_metadata_result(
             }
         }
         Ok(Err(_)) => {
-            clear_metadata_skeleton(&metadata_label, &commit_message_label);
+            clear_metadata_skeleton(
+                &title_label,
+                &metadata_label,
+                &avatar_label,
+                &commit_message_label,
+            );
         }
         Err(mpsc::TryRecvError::Empty) => {
+            let title_label_clone = title_label.clone();
             let metadata_label_clone = metadata_label.clone();
+            let avatar_label_clone = avatar_label.clone();
             let sha_row_clone = sha_row.clone();
             let sha_label_clone = sha_label.clone();
             let sha_copy_text_clone = sha_copy_text.clone();
+            let message_container_clone = message_container.clone();
             let commit_message_label_clone = commit_message_label.clone();
             let expand_label_clone = expand_label.clone();
             let full_message_clone = full_message.clone();
@@ -945,10 +1019,13 @@ fn poll_metadata_result(
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 poll_metadata_result(
                     rx,
+                    title_label_clone,
                     metadata_label_clone,
+                    avatar_label_clone,
                     sha_row_clone,
                     sha_label_clone,
                     sha_copy_text_clone,
+                    message_container_clone,
                     commit_message_label_clone,
                     expand_label_clone,
                     full_message_clone,
@@ -957,7 +1034,12 @@ fn poll_metadata_result(
             });
         }
         Err(_) => {
-            clear_metadata_skeleton(&metadata_label, &commit_message_label);
+            clear_metadata_skeleton(
+                &title_label,
+                &metadata_label,
+                &avatar_label,
+                &commit_message_label,
+            );
         }
     }
 }
@@ -976,7 +1058,9 @@ fn load_range_diff(
     ui.repo_view.set_diff_chrome_visible(true);
     set_diff_skeleton(&ui.repo_view.diff_files_box);
     set_metadata_skeleton(
+        &ui.repo_view.commit_title_label,
         &ui.repo_view.diff_metadata_label,
+        &ui.repo_view.diff_avatar_label,
         &ui.repo_view.diff_sha_row,
         &ui.repo_view.commit_message_label,
     );
@@ -1002,12 +1086,18 @@ fn load_range_diff(
     poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
 
     clear_metadata_skeleton(
+        &ui.repo_view.commit_title_label,
         &ui.repo_view.diff_metadata_label,
+        &ui.repo_view.diff_avatar_label,
         &ui.repo_view.commit_message_label,
     );
+    // A range selection has no single author; hide the avatar and use the title
+    // row for the summary.
+    ui.repo_view.diff_avatar_label.set_visible(false);
     ui.repo_view
-        .diff_metadata_label
+        .commit_title_label
         .set_text(&format!("{count} commits selected"));
+    ui.repo_view.diff_metadata_label.set_text("");
     let short_oldest = oldest_sha.get(..7).unwrap_or(oldest_sha);
     let short_newest = newest_sha.get(..7).unwrap_or(newest_sha);
     ui.repo_view
@@ -1015,6 +1105,8 @@ fn load_range_diff(
         .set_text(&format!(" {short_oldest}..{short_newest}"));
     *ui.repo_view.diff_sha_copy_text.borrow_mut() = format!("{oldest_sha}..{newest_sha}");
     ui.repo_view.diff_sha_row.set_visible(true);
+    // A range has no commit body; hide the container so it leaves no empty gap.
+    ui.repo_view.commit_message_container.set_visible(false);
     ui.repo_view.commit_message_label.set_text("");
     *ui.repo_view.full_message.borrow_mut() = String::new();
 }
@@ -1028,7 +1120,9 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     // Show skeleton loading state
     set_diff_skeleton(&ui.repo_view.diff_files_box);
     set_metadata_skeleton(
+        &ui.repo_view.commit_title_label,
         &ui.repo_view.diff_metadata_label,
+        &ui.repo_view.diff_avatar_label,
         &ui.repo_view.diff_sha_row,
         &ui.repo_view.commit_message_label,
     );
@@ -1054,10 +1148,13 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
 
     // Load metadata in background thread
+    let title_label_clone = ui.repo_view.commit_title_label.clone();
     let metadata_label_clone = ui.repo_view.diff_metadata_label.clone();
+    let avatar_label_clone = ui.repo_view.diff_avatar_label.clone();
     let sha_row_clone = ui.repo_view.diff_sha_row.clone();
     let sha_label_clone = ui.repo_view.diff_sha_label.clone();
     let sha_copy_text_clone = ui.repo_view.diff_sha_copy_text.clone();
+    let message_container_clone = ui.repo_view.commit_message_container.clone();
     let commit_message_label_clone = ui.repo_view.commit_message_label.clone();
     let expand_label_clone = ui.repo_view.expand_label.clone();
     let full_message_clone = ui.repo_view.full_message.clone();
@@ -1072,10 +1169,13 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     });
     poll_metadata_result(
         rx_meta,
+        title_label_clone,
         metadata_label_clone,
+        avatar_label_clone,
         sha_row_clone,
         sha_label_clone,
         sha_copy_text_clone,
+        message_container_clone,
         commit_message_label_clone,
         expand_label_clone,
         full_message_clone,
@@ -1149,4 +1249,48 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
                 );
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{author_initials, split_commit_message};
+
+    #[test]
+    fn split_commit_message_separates_subject_and_body() {
+        let (subject, body) = split_commit_message("Fix the bug\n\nDetails line 1\nDetails line 2");
+        assert_eq!(subject, "Fix the bug");
+        assert_eq!(body, "Details line 1\nDetails line 2");
+    }
+
+    #[test]
+    fn split_commit_message_subject_only_has_empty_body() {
+        let (subject, body) = split_commit_message("Just a subject\n");
+        assert_eq!(subject, "Just a subject");
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn split_commit_message_trims_extra_blank_lines() {
+        let (subject, body) = split_commit_message("Subject\n\n\nBody\n\n");
+        assert_eq!(subject, "Subject");
+        assert_eq!(body, "Body");
+    }
+
+    #[test]
+    fn author_initials_uses_first_two_word_initials() {
+        assert_eq!(author_initials("Mark Deepwell"), "MD");
+        assert_eq!(author_initials("ada b. lovelace"), "AB");
+    }
+
+    #[test]
+    fn author_initials_uses_two_chars_for_single_word() {
+        assert_eq!(author_initials("mark"), "MA");
+        assert_eq!(author_initials("x"), "X");
+    }
+
+    #[test]
+    fn author_initials_handles_empty_name() {
+        assert_eq!(author_initials(""), "");
+        assert_eq!(author_initials("   "), "");
+    }
 }
