@@ -168,6 +168,66 @@ impl TestRepo {
             .expect("create commit")
     }
 
+    /// Commit on `branch` with explicit author and committer timestamps (seconds
+    /// since the epoch). Useful for exercising commits whose commit date differs
+    /// from the author date (e.g. rebased or cherry-picked commits).
+    pub fn commit_with_times(
+        &mut self,
+        branch: &str,
+        message: &str,
+        author_secs: i64,
+        committer_secs: i64,
+    ) -> Oid {
+        let seq = self.next_seq();
+        let file = format!("file_{seq}.txt");
+        let contents = format!("contents {seq}\n");
+        let ref_name = format!("refs/heads/{branch}");
+        let parent_commit = self
+            .repo
+            .find_reference(&ref_name)
+            .ok()
+            .and_then(|r| r.peel_to_commit().ok());
+
+        let tree_oid = {
+            let mut index = self.repo.index().expect("open index");
+            match &parent_commit {
+                Some(pc) => index.read_tree(&pc.tree().unwrap()).expect("seed index"),
+                None => index.clear().expect("clear index"),
+            }
+
+            let workdir = self.repo.workdir().expect("workdir");
+            let full = workdir.join(&file);
+            std::fs::write(&full, &contents).expect("write file");
+
+            index.add_path(Path::new(&file)).expect("add path");
+            let oid = index.write_tree().expect("write tree");
+            index.write().expect("persist index");
+            oid
+        };
+
+        let tree = self.repo.find_tree(tree_oid).expect("find tree");
+        let author = Signature::new("Tester", "tester@example.com", &Time::new(author_secs, 0))
+            .expect("author sig");
+        let committer = Signature::new(
+            "Tester",
+            "tester@example.com",
+            &Time::new(committer_secs, 0),
+        )
+        .expect("committer sig");
+
+        let parents: Vec<&Commit> = parent_commit.iter().collect();
+        self.repo
+            .commit(
+                Some(&ref_name),
+                &author,
+                &committer,
+                message,
+                &tree,
+                &parents,
+            )
+            .expect("create commit")
+    }
+
     /// Create a merge commit on `branch` with a second parent from `other_branch`.
     /// The resulting tree mirrors `branch`'s current tip (no real merge performed).
     pub fn merge_commit(&mut self, branch: &str, other_branch: &str, message: &str) -> Oid {

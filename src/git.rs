@@ -594,6 +594,8 @@ pub struct CommitMetadata {
     pub author_name: String,
     pub author_email: String,
     pub date_time: String,
+    /// Committer date, only set when it differs from the author date.
+    pub commit_date_time: Option<String>,
     pub commit_message: String,
     pub git_sha: String,
 }
@@ -607,6 +609,12 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
     let author_name = author.name().unwrap_or("").to_string();
     let author_email = author.email().unwrap_or("").to_string();
     let date_time = format_datetime(&author.when());
+    let committer_date_time = format_datetime(&commit.committer().when());
+    let commit_date_time = if committer_date_time != date_time {
+        Some(committer_date_time)
+    } else {
+        None
+    };
     let commit_message = String::from_utf8_lossy(commit.message_bytes()).to_string();
     let git_sha = commit_sha.to_string();
 
@@ -614,6 +622,7 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
         author_name,
         author_email,
         date_time,
+        commit_date_time,
         commit_message,
         git_sha,
     })
@@ -847,6 +856,32 @@ mod tests {
             .iter()
             .map(|c| c.message.trim().to_string())
             .collect()
+    }
+
+    #[test]
+    fn commit_metadata_omits_commit_date_when_equal_to_author_date() {
+        let mut tr = TestRepo::new();
+        let oid = tr.commit("only commit");
+
+        let meta =
+            get_commit_metadata(tr.path().to_str().unwrap(), &oid.to_string()).expect("metadata");
+        assert!(meta.commit_date_time.is_none());
+    }
+
+    #[test]
+    fn commit_metadata_includes_commit_date_when_different_from_author_date() {
+        let mut tr = TestRepo::new();
+        // Author and committer timestamps a day apart (e.g. a rebased commit).
+        let oid = tr.commit_with_times("main", "rebased", 1_700_000_000, 1_700_086_400);
+
+        let meta =
+            get_commit_metadata(tr.path().to_str().unwrap(), &oid.to_string()).expect("metadata");
+        let commit_date_time = meta.commit_date_time.expect("commit date present");
+        assert_ne!(commit_date_time, meta.date_time);
+        assert_eq!(
+            commit_date_time,
+            format_datetime(&Time::new(1_700_086_400, 0))
+        );
     }
 
     #[test]

@@ -901,10 +901,19 @@ fn poll_metadata_result(
         Ok(Ok(metadata)) => {
             clear_metadata_skeleton(&metadata_label, &commit_message_label);
 
-            let label_text = format!(
-                "{} <{}> - {} - ",
-                metadata.author_name, metadata.author_email, metadata.date_time
-            );
+            let label_text = match &metadata.commit_date_time {
+                Some(commit_date_time) => format!(
+                    "{} <{}> - authored {} - committed {} - ",
+                    metadata.author_name,
+                    metadata.author_email,
+                    metadata.date_time,
+                    commit_date_time
+                ),
+                None => format!(
+                    "{} <{}> - {} - ",
+                    metadata.author_name, metadata.author_email, metadata.date_time
+                ),
+            };
             metadata_label.set_text(&label_text);
 
             sha_label.set_text(&metadata.git_sha);
