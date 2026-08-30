@@ -277,6 +277,8 @@ impl RepoView {
             None,
         );
         diff_sha_copy_row.reveal_on_hover(&diff_sha_copy_row.widget);
+        diff_sha_copy_row.copy_on_click();
+        diff_sha_copy_row.label.add_css_class("dim-label");
         let diff_sha_row = diff_sha_copy_row.widget.clone();
         let diff_sha_label = diff_sha_copy_row.label.clone();
         let diff_sha_copy_text = diff_sha_copy_row.copy_text.clone();

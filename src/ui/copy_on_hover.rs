@@ -125,6 +125,19 @@ impl CopyOnHoverRow {
         attach_hover_reveal(&self.copy_button, hover_target);
     }
 
+    /// Copy when the label is clicked, not only the copy icon.
+    pub fn copy_on_click(&self) {
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(1);
+        let copy_button = self.copy_button.clone();
+        gesture.connect_pressed(move |_, _, _, _| {
+            copy_button.emit_clicked();
+        });
+        self.label.add_controller(gesture);
+        self.label
+            .set_tooltip_text(self.copy_button.tooltip_text().as_deref());
+    }
+
     pub fn with_trailing_spacer(self) -> gtk::Box {
         let spacer = gtk::Box::builder().hexpand(true).build();
         self.widget.append(&spacer);
