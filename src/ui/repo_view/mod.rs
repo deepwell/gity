@@ -37,7 +37,7 @@ pub struct RepoView {
     pub diff_avatar_label: gtk::Label,
     /// Bold commit subject (first line of the commit message).
     pub commit_title_label: gtk::Label,
-    /// Metadata subtitle: author name plus authored/committed dates.
+    /// Metadata subtitle: author name and email plus authored/committed dates.
     pub diff_metadata_label: gtk::Label,
     pub diff_sha_row: gtk::Box,
     pub diff_sha_label: gtk::Label,
@@ -259,7 +259,7 @@ impl RepoView {
             .build();
         commit_title_label.add_css_class("commit-title");
 
-        // Metadata subtitle: author name + authored/committed dates.
+        // Metadata subtitle: author name <email> + authored/committed dates.
         let diff_metadata_label = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::Start)

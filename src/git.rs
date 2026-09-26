@@ -598,6 +598,7 @@ pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
 
 pub struct CommitMetadata {
     pub author_name: String,
+    pub author_email: String,
     pub date_time: String,
     /// Committer date, only set when it differs from the author date.
     pub commit_date_time: Option<String>,
@@ -612,6 +613,7 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
 
     let author = commit.author();
     let author_name = author.name().unwrap_or("").to_string();
+    let author_email = author.email().unwrap_or("").to_string();
     let date_time = format_datetime_short(&author.when());
     let committer_date_time = format_datetime_short(&commit.committer().when());
     let commit_date_time = if committer_date_time != date_time {
@@ -624,6 +626,7 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
 
     Ok(CommitMetadata {
         author_name,
+        author_email,
         date_time,
         commit_date_time,
         commit_message,
@@ -859,6 +862,16 @@ mod tests {
             .iter()
             .map(|c| c.message.trim().to_string())
             .collect()
+    }
+
+    #[test]
+    fn commit_metadata_includes_author_email() {
+        let mut tr = TestRepo::new();
+        let oid = tr.commit("only commit");
+
+        let meta =
+            get_commit_metadata(tr.path().to_str().unwrap(), &oid.to_string()).expect("metadata");
+        assert!(!meta.author_email.is_empty());
     }
 
     #[test]

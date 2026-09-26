@@ -242,6 +242,15 @@ fn clear_metadata_skeleton(
     message_label.remove_css_class("skeleton");
 }
 
+/// Formats an author as "Name <email>", omitting the email when it is empty.
+fn format_author(name: &str, email: &str) -> String {
+    if email.is_empty() {
+        name.to_string()
+    } else {
+        format!("{} <{}>", name, email)
+    }
+}
+
 /// Computes up to two uppercase initials for an author avatar (e.g. "Mark
 /// Deepwell" -> "MD", "mark" -> "MA").
 fn author_initials(name: &str) -> String {
@@ -965,15 +974,13 @@ fn poll_metadata_result(
             avatar_label.set_text(&author_initials(&metadata.author_name));
             avatar_label.set_visible(true);
 
+            let author = format_author(&metadata.author_name, &metadata.author_email);
             let subtitle = match &metadata.commit_date_time {
                 Some(commit_date_time) => format!(
                     "{} \u{00B7} authored {} \u{00B7} committed {}",
-                    metadata.author_name, metadata.date_time, commit_date_time
+                    author, metadata.date_time, commit_date_time
                 ),
-                None => format!(
-                    "{} \u{00B7} authored {}",
-                    metadata.author_name, metadata.date_time
-                ),
+                None => format!("{} \u{00B7} authored {}", author, metadata.date_time),
             };
             metadata_label.set_text(&subtitle);
 
@@ -1253,7 +1260,7 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{author_initials, split_commit_message};
+    use super::{author_initials, format_author, split_commit_message};
 
     #[test]
     fn split_commit_message_separates_subject_and_body() {
@@ -1274,6 +1281,19 @@ mod tests {
         let (subject, body) = split_commit_message("Subject\n\n\nBody\n\n");
         assert_eq!(subject, "Subject");
         assert_eq!(body, "Body");
+    }
+
+    #[test]
+    fn format_author_appends_email() {
+        assert_eq!(
+            format_author("Mark Deepwell", "mark@example.com"),
+            "Mark Deepwell <mark@example.com>"
+        );
+    }
+
+    #[test]
+    fn format_author_omits_empty_email() {
+        assert_eq!(format_author("Mark Deepwell", ""), "Mark Deepwell");
     }
 
     #[test]
