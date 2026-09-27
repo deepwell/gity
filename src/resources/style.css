@@ -60,6 +60,72 @@
     opacity: 1;
 }
 
+/* Changed-files column beside the diff */
+.diff-file-tree {
+    background-color: @view_bg_color;
+}
+
+.diff-file-tree-list {
+    background-color: transparent;
+}
+
+/* Compact rows with no vertical gaps so the indent guide lines join up. */
+.diff-file-tree-list > row {
+    min-height: 28px;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* Half-width indentation: 10px per level (Adwaita uses a 16px indent plus
+   4px spacing). Spacing is removed so levels stay at a fixed step; the gap
+   between the chevron and the name is restored as a margin instead. */
+.diff-file-tree-list treeexpander {
+    border-spacing: 0;
+}
+
+.diff-file-tree-list treeexpander > indent {
+    -gtk-icon-size: 10px;
+}
+
+.diff-file-tree-list treeexpander > box {
+    margin-left: 4px;
+}
+
+/* Indent guide lines: each indent level starts where its parent directory's
+   16px chevron starts, so a line at 7px runs under the chevron's center.
+   Kept on a whole pixel so it renders as a crisp 1px line. */
+.diff-file-tree-list treeexpander > indent {
+    background-image: linear-gradient(alpha(@view_fg_color, 0.15), alpha(@view_fg_color, 0.15));
+    background-size: 1px 100%;
+    background-position: 7px 0;
+    background-repeat: no-repeat;
+}
+
+/* Files get a spare indent in place of a directory chevron (to keep names
+   aligned with sibling directories); it is always second to last. Match the
+   chevron's width and skip its line. */
+.diff-file-tree-list treeexpander > indent:nth-last-child(2) {
+    -gtk-icon-size: 16px;
+    background-image: none;
+}
+
+.diff-file-tree-file {
+    font-weight: 500;
+}
+
+.diff-stat {
+    border-radius: 4px;
+    padding: 0 4px;
+    font-size: 0.85em;
+    font-weight: 600;
+    font-feature-settings: "tnum";
+}
+
+/* .diff-stat-add / .diff-stat-remove colors are set in window/diff.rs from the
+   diff panel's colors so they stay in sync with it. */
+
 /* SKELETON LOADING */
 .skeleton {
     border-radius: 4px;

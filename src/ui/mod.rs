@@ -6,6 +6,7 @@
 pub mod branch_panel;
 pub mod commit_list;
 pub mod copy_on_hover;
+pub mod diff_file_tree;
 pub mod grid_cell;
 pub mod placeholder;
 pub mod repo_view;
@@ -15,6 +16,7 @@ pub mod window;
 
 pub use branch_panel::{BranchPanel, RefType};
 pub use commit_list::{CommitList, CommitLoadRequest, CommitPagingState};
+pub use diff_file_tree::{DiffFileTree, FileSummary};
 pub use grid_cell::{Entry, GridCell};
 pub use repo_view::RepoView;
 pub use welcome_view::WelcomeView;

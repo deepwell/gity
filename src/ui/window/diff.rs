@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use sv::prelude::*;
 
 use crate::git;
-use crate::ui::copy_on_hover;
+use crate::ui::{DiffFileTree, FileSummary, copy_on_hover};
 
 use super::state::AppState;
 use super::ui::WindowUi;
@@ -75,6 +75,15 @@ fn update_diff_tag_colors(buffer: &gtk::TextBuffer) {
     if let Some(gutter_remove_tag) = tag_table.lookup("gutter-remove") {
         gutter_remove_tag.set_property("paragraph-background", &colors.gutter_remove_bg);
     }
+}
+
+/// CSS for the changed-files "+N" / "−N" chips, using the same colors as the diff lines.
+fn diff_stat_css(colors: &DiffColors) -> String {
+    format!(
+        ".diff-stat-add {{ background-color: {}; }}\n\
+         .diff-stat-remove {{ background-color: {}; }}\n",
+        colors.add_bg, colors.remove_bg
+    )
 }
 
 /// Refresh diff colors for all visible diff sections when theme changes.
@@ -355,6 +364,63 @@ fn sections_from_commit_diff(diff: &git::CommitDiff) -> Vec<DiffSection> {
             DiffSection { label, text }
         })
         .collect()
+}
+
+fn file_summaries_from_commit_diff(diff: &git::CommitDiff) -> Vec<FileSummary> {
+    diff.files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            let (additions, deletions) = file.line_stats();
+            FileSummary {
+                index,
+                path: file
+                    .new_path
+                    .clone()
+                    .or_else(|| file.old_path.clone())
+                    .unwrap_or_default(),
+                label: file_change_label(file),
+                additions,
+                deletions,
+            }
+        })
+        .collect()
+}
+
+/// Expands the diff section for file `index` and scrolls it to the top of the diff view.
+fn scroll_to_file(
+    diff_files_box: &gtk::Box,
+    diff_scrolled_window: &gtk::ScrolledWindow,
+    index: usize,
+) {
+    let mut child = diff_files_box.first_child();
+    let mut expander_index = 0;
+    let expander = loop {
+        let Some(w) = child else {
+            return;
+        };
+        child = w.next_sibling();
+        if let Ok(expander) = w.downcast::<gtk::Expander>() {
+            if expander_index == index {
+                break expander;
+            }
+            expander_index += 1;
+        }
+    };
+
+    expander.set_expanded(true);
+
+    // Wait for the (possibly newly built) section to be laid out before scrolling.
+    let diff_files_box = diff_files_box.clone();
+    let diff_scrolled_window = diff_scrolled_window.clone();
+    glib::idle_add_local_once(move || {
+        if let Some(point) = expander.compute_point(&diff_files_box, &gtk::graphene::Point::zero())
+        {
+            diff_scrolled_window
+                .vadjustment()
+                .set_value(point.y() as f64);
+        }
+    });
 }
 
 fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
@@ -809,6 +875,7 @@ fn build_file_expander_lazy(
 fn poll_diff_result(
     rx: mpsc::Receiver<Result<git::CommitDiff, git2::Error>>,
     diff_files_box: gtk::Box,
+    diff_file_tree: DiffFileTree,
     expand_button: gtk::Button,
     collapse_button: gtk::Button,
 ) {
@@ -816,6 +883,7 @@ fn poll_diff_result(
         Ok(Ok(diff)) => {
             let sections = sections_from_commit_diff(&diff);
             clear_container(&diff_files_box);
+            diff_file_tree.set_files(&file_summaries_from_commit_diff(&diff));
 
             if let Some(preamble) = diff.preamble.as_ref().filter(|s| !s.trim().is_empty()) {
                 let preamble_label = gtk::Label::builder()
@@ -885,6 +953,7 @@ fn poll_diff_result(
             update_expand_collapse_buttons(&diff_files_box, &expand_button, &collapse_button);
         }
         Ok(Err(e)) => {
+            diff_file_tree.clear();
             let error_msg = format!("Error loading diff: {}", e);
             set_placeholder(
                 &diff_files_box,
@@ -895,18 +964,21 @@ fn poll_diff_result(
         }
         Err(mpsc::TryRecvError::Empty) => {
             let diff_files_box_clone = diff_files_box.clone();
+            let diff_file_tree_clone = diff_file_tree.clone();
             let expand_btn_clone = expand_button.clone();
             let collapse_btn_clone = collapse_button.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 poll_diff_result(
                     rx,
                     diff_files_box_clone,
+                    diff_file_tree_clone,
                     expand_btn_clone,
                     collapse_btn_clone,
                 );
             });
         }
         Err(_) => {
+            diff_file_tree.clear();
             set_placeholder(
                 &diff_files_box,
                 crate::ui::placeholder::ICON_ERROR,
@@ -1064,6 +1136,7 @@ fn load_range_diff(
 
     ui.repo_view.set_diff_chrome_visible(true);
     set_diff_skeleton(&ui.repo_view.diff_files_box);
+    ui.repo_view.diff_file_tree.clear();
     set_metadata_skeleton(
         &ui.repo_view.commit_title_label,
         &ui.repo_view.diff_metadata_label,
@@ -1090,7 +1163,13 @@ fn load_range_diff(
         let diff_result = git::get_range_diff(path_clone.to_str().unwrap(), &oldest, &newest);
         let _ = tx.send(diff_result);
     });
-    poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
+    poll_diff_result(
+        rx,
+        diff_files_box_clone,
+        ui.repo_view.diff_file_tree.clone(),
+        expand_btn,
+        collapse_btn,
+    );
 
     clear_metadata_skeleton(
         &ui.repo_view.commit_title_label,
@@ -1126,6 +1205,7 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     ui.repo_view.set_diff_chrome_visible(true);
     // Show skeleton loading state
     set_diff_skeleton(&ui.repo_view.diff_files_box);
+    ui.repo_view.diff_file_tree.clear();
     set_metadata_skeleton(
         &ui.repo_view.commit_title_label,
         &ui.repo_view.diff_metadata_label,
@@ -1152,7 +1232,13 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
         let diff_result = git::get_commit_diff(path_clone.to_str().unwrap(), &sha_clone);
         let _ = tx.send(diff_result);
     });
-    poll_diff_result(rx, diff_files_box_clone, expand_btn, collapse_btn);
+    poll_diff_result(
+        rx,
+        diff_files_box_clone,
+        ui.repo_view.diff_file_tree.clone(),
+        expand_btn,
+        collapse_btn,
+    );
 
     // Load metadata in background thread
     let title_label_clone = ui.repo_view.commit_title_label.clone();
@@ -1215,10 +1301,32 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
             });
     }
 
+    // Clicking a file in the changed-files column jumps to its diff.
+    {
+        let diff_files_box = ui.repo_view.diff_files_box.clone();
+        let diff_scrolled_window = ui.repo_view.diff_scrolled_window.clone();
+        ui.repo_view.diff_file_tree.on_file_activated(move |index| {
+            scroll_to_file(&diff_files_box, &diff_scrolled_window, index);
+        });
+    }
+
+    // Changed-files chips share the diff colors; installed app-wide so they
+    // can be reloaded on theme changes like the diff text tags.
+    let diff_stat_provider = gtk::CssProvider::new();
+    diff_stat_provider.load_from_string(&diff_stat_css(get_diff_colors()));
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &diff_stat_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
     // Refresh diff colors when theme changes (light/dark mode switch)
     let diff_files_box_for_theme = ui.repo_view.diff_files_box.clone();
     adw::StyleManager::default().connect_dark_notify(move |_| {
         refresh_diff_colors(&diff_files_box_for_theme);
+        diff_stat_provider.load_from_string(&diff_stat_css(get_diff_colors()));
     });
 
     let ui_for_selection = ui.clone();

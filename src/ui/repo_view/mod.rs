@@ -6,12 +6,18 @@ use gtk::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::ui::{BranchPanel, CommitList, CommitPagingState, copy_on_hover};
+use crate::ui::{BranchPanel, CommitList, CommitPagingState, DiffFileTree, copy_on_hover};
+
+/// Minimum app width at which the changed-files column is shown beside the diff.
+const FILE_TREE_MIN_APP_WIDTH: f64 = 1400.0;
+/// Minimum width the changed-files column can be resized down to.
+const FILE_TREE_MIN_WIDTH: i32 = 180;
 
 #[derive(Clone)]
 pub struct RepoView {
     /// Root widget containing the entire repository view (search + panels + diff).
-    pub widget: gtk::Box,
+    /// A breakpoint bin so the layout can adapt to the app width.
+    pub widget: adw::BreakpointBin,
 
     // Search UI
     pub search_bar: gtk::SearchBar,
@@ -27,6 +33,9 @@ pub struct RepoView {
 
     // Diff UI
     pub diff_files_box: gtk::Box,
+    pub diff_scrolled_window: gtk::ScrolledWindow,
+    /// Changed-files sidebar, shown to the left of the diff on wide windows.
+    pub diff_file_tree: DiffFileTree,
     /// Header row holding the author avatar, commit title and metadata subtitle.
     /// Hidden while the diff placeholder is shown.
     pub diff_header: gtk::Box,
@@ -55,6 +64,8 @@ pub struct RepoView {
     // Layout widgets (persistence reads/writes these positions)
     pub main_content_paned: gtk::Paned,
     pub horizontal_paned: gtk::Paned,
+    /// Split between the changed-files column and the diff.
+    pub diff_body_paned: gtk::Paned,
 }
 
 impl RepoView {
@@ -74,6 +85,7 @@ impl RepoView {
                     text,
                 ));
         }
+        self.diff_file_tree.clear();
 
         // Hide the diff header + commit message so the placeholder fills the
         // whole diff view; they're shown again when an actual diff loads.
@@ -100,6 +112,7 @@ impl RepoView {
     pub fn set_diff_chrome_visible(&self, visible: bool) {
         self.diff_header.set_visible(visible);
         self.commit_message_container.set_visible(visible);
+        self.diff_file_tree.widget.set_visible(visible);
     }
 
     /// Collapse the commit message back to its truncated height and reset scroll.
@@ -411,7 +424,32 @@ impl RepoView {
             .build();
         diff_box.append(&diff_header);
         diff_box.append(&commit_message_container);
-        diff_box.append(&diff_scrolled_window);
+
+        // Changed-files column to the left of the diff. Hidden by default and
+        // only shown by the width breakpoint below.
+        let diff_file_tree = DiffFileTree::new();
+        diff_file_tree.widget.set_visible(false);
+        let file_tree_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .width_request(FILE_TREE_MIN_WIDTH)
+            .visible(false)
+            .build();
+        diff_file_tree.widget.set_hexpand(true);
+        file_tree_column.append(&diff_file_tree.widget);
+
+        // Resizable split between the changed-files column and the diff. When
+        // the column is hidden the paned hides its handle and the diff fills it.
+        let diff_body_paned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .vexpand(true)
+            .start_child(&file_tree_column)
+            .end_child(&diff_scrolled_window)
+            .resize_start_child(false)
+            .resize_end_child(true)
+            .shrink_start_child(false)
+            .shrink_end_child(true)
+            .build();
+        diff_box.append(&diff_body_paned);
 
         let gesture = gtk::GestureClick::new();
         gesture.set_button(1);
@@ -486,11 +524,26 @@ impl RepoView {
         horizontal_paned.set_shrink_end_child(true);
 
         // Main view: search bar + paned layout
-        let widget = gtk::Box::builder()
+        let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
-        widget.append(&search_bar);
-        widget.append(&horizontal_paned);
+        content.append(&search_bar);
+        content.append(&horizontal_paned);
+
+        // The repo view fills the window, so its width is the app width.
+        // BreakpointBin requires an explicit minimum size.
+        let widget = adw::BreakpointBin::builder()
+            .width_request(360)
+            .height_request(300)
+            .child(&content)
+            .build();
+        let wide_breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MinWidth,
+            FILE_TREE_MIN_APP_WIDTH,
+            adw::LengthUnit::Px,
+        ));
+        wide_breakpoint.add_setter(&file_tree_column, "visible", Some(&true.to_value()));
+        adw::prelude::BreakpointBinExt::add_breakpoint(&widget, wide_breakpoint);
 
         Self {
             widget,
@@ -503,6 +556,8 @@ impl RepoView {
             commit_list,
             commit_paging_state,
             diff_files_box,
+            diff_scrolled_window,
+            diff_file_tree,
             diff_header,
             commit_message_container,
             diff_avatar_label,
@@ -520,6 +575,7 @@ impl RepoView {
             is_expanded,
             main_content_paned,
             horizontal_paned,
+            diff_body_paned,
         }
     }
 }

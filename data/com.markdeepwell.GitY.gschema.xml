@@ -26,6 +26,11 @@
       <summary>Branch panel width</summary>
       <description>The width of the branch panel</description>
     </key>
+    <key name="diff-file-tree-width" type="i">
+      <default>300</default>
+      <summary>Changed-files column width</summary>
+      <description>The width of the changed-files column shown beside the commit diff on wide windows</description>
+    </key>
     <key name="recent-repositories" type="s">
       <default>"[]"</default>
       <summary>Recent repositories</summary>

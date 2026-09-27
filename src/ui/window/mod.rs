@@ -174,6 +174,22 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
         let _ = settings_for_branch_panel.set_int("branch-panel-width", paned.position());
     });
 
+    // Restore changed-files column width from GSettings
+    let diff_body_paned = ui.repo_view.diff_body_paned.clone();
+    diff_body_paned.set_position(settings.int("diff-file-tree-width"));
+
+    // Save changed-files column width when it changes. Skip while the column is
+    // hidden (narrow window) so the paned's fallback layout isn't persisted.
+    let settings_for_file_tree = settings.clone();
+    diff_body_paned.connect_position_notify(move |paned| {
+        if paned
+            .start_child()
+            .is_some_and(|column| column.is_visible())
+        {
+            let _ = settings_for_file_tree.set_int("diff-file-tree-width", paned.position());
+        }
+    });
+
     // Main/welcome views are added by ui::WindowUi::build().
 
     // Save window state to GSettings when window is resized

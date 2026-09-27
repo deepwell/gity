@@ -38,6 +38,21 @@ pub struct FileChange {
     pub patch: String,
 }
 
+impl FileChange {
+    /// Returns `(additions, deletions)` counted from the patch lines. File
+    /// headers (`---`/`+++`) are already stripped from `patch`, so every line
+    /// starting with `+`/`-` is a content change.
+    pub fn line_stats(&self) -> (usize, usize) {
+        self.patch
+            .lines()
+            .fold((0, 0), |(adds, dels), line| match line.as_bytes().first() {
+                Some(b'+') => (adds + 1, dels),
+                Some(b'-') => (adds, dels + 1),
+                _ => (adds, dels),
+            })
+    }
+}
+
 /// Structured diff for a single commit or a commit range.
 #[derive(Debug, Clone)]
 pub struct CommitDiff {
@@ -820,6 +835,32 @@ pub fn get_tags(path: &Path) -> Result<std::collections::HashMap<String, Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file_change_with_patch(patch: &str) -> FileChange {
+        FileChange {
+            kind: FileChangeKind::Modified,
+            old_path: Some("a.txt".to_string()),
+            new_path: Some("a.txt".to_string()),
+            patch: patch.to_string(),
+        }
+    }
+
+    #[test]
+    fn line_stats_counts_additions_and_deletions() {
+        let change = file_change_with_patch("@@ -1,3 +1,3 @@\n context\n-old\n+new\n+newer\n");
+        assert_eq!(change.line_stats(), (2, 1));
+    }
+
+    #[test]
+    fn line_stats_counts_content_that_looks_like_headers() {
+        let change = file_change_with_patch("@@ -1 +1 @@\n--- removed dashes\n+++ added pluses\n");
+        assert_eq!(change.line_stats(), (1, 1));
+    }
+
+    #[test]
+    fn line_stats_empty_patch_is_zero() {
+        assert_eq!(file_change_with_patch("").line_stats(), (0, 0));
+    }
 
     #[test]
     fn commit_display_time_uses_viewer_local_timezone_not_author_offset() {
