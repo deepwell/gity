@@ -9,7 +9,7 @@
       A fast and performant Git repository browser with comprehensive search across the full commit history. View diffs and information about all commits in any branch or tag.
     </p>
     <ul>
-      <li>View all branches, tags, commits and remotes for local Git repositories</li>
+      <li>View all branches, tags, commits, stashes and remotes for local Git repositories</li>
       <li>Search the full commit history by message, author, or Git SHA</li>
       <li>Coloured Git diff viewer</li>
       <li>Remembers recently opened Git repositories</li>
@@ -53,6 +53,21 @@
   </screenshots>
 
   <releases>
+    <release version="2026.6" date="2026-09-28">
+      <description>
+        <ul>
+          <li>Add support for viewing git stashes</li>
+          <li>Add a new files changed view for large screens to show the changed file list with the number of lines added and removed</li>
+          <li>Redesign the commit details with the author's initials, email, and a clearer title</li>
+          <li>Show the commit date when it differs from the author date</li>
+          <li>Click a commit SHA to copy it to the clipboard</li>
+          <li>Notify the user when a reload can't return to the selected commit, branch, or stash</li>
+          <li>Fix outdated search results after reloading a repository</li>
+          <li>Fix long commit titles and descriptions widening the diff pane</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="2026.5" date="2026-08-22">
       <description>
         <ul>
