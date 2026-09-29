@@ -1,0 +1,21 @@
+name: Rust
+
+on:
+  push:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-26.04
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install dependencies
+      run: sudo apt-get install -y pkg-config libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libssl-dev libglib2.0-dev-bin
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose

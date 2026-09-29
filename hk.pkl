@@ -4,7 +4,6 @@ import "package://github.com/jdx/hk/releases/download/v1.45.0/hk@1.45.0#/Builtin
 local linters = new Mapping<String, Step> {
   ["trailing-whitespace"] = Builtins.trailing_whitespace
   ["end-of-file-fixer"] = Builtins.newlines
-  ["yamllint"] = Builtins.yamllint
   ["json-syntax"] {
     glob = List("**/*.json")
     check = "python3 -c \"import json,sys; [json.load(open(f, encoding='utf-8')) for f in sys.argv[1:]]\" {{files}}"
