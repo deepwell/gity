@@ -16,7 +16,16 @@ fn ref_type_from_classification(c: RefClassification) -> RefType {
         RefClassification::Branch => RefType::Branch,
         RefClassification::Remote => RefType::Remote,
         RefClassification::Tag => RefType::Tag,
+        RefClassification::Stash => RefType::Stash,
     }
+}
+
+/// The (name, sha) of `ref_name` when it is a stash, for the commit list chip.
+fn stash_head(path: &Path, ref_name: &str) -> Option<(String, String)> {
+    if !git::is_stash_ref(ref_name) {
+        return None;
+    }
+    git::resolve_ref_sha(path, ref_name).map(|sha| (ref_name.to_string(), sha))
 }
 
 pub fn show_repo_error(window: &gtk::ApplicationWindow, path: &PathBuf, error: &str) {
@@ -114,11 +123,25 @@ pub fn load_repo_with_selection(
     ui.repo_view
         .commit_list
         .set_branch_head(git::get_main_branch_head(&path, &effective_ref));
+    ui.repo_view
+        .commit_list
+        .set_stash_head(stash_head(&path, &effective_ref));
+
+    let on_selection_missing: Option<Box<dyn Fn()>> = initial_selection_sha.as_ref().map(|_| {
+        let ui = ui.clone();
+        let ref_name = effective_ref.clone();
+        Box::new(move || {
+            ui.show_toast(&format!(
+                "The selected commit is no longer on {ref_name}. Showing the latest commit."
+            ));
+        }) as Box<dyn Fn()>
+    });
 
     ui.repo_view.commit_list.load_commits(
         path.clone(),
         effective_ref.clone(),
         initial_selection_sha,
+        on_selection_missing,
         {
             let current_ref = state.current_ref.clone();
             move |ref_name| {
@@ -152,10 +175,19 @@ pub fn load_repo_with_selection(
         }
     };
 
+    let stashes = match git::get_stash_list(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            Logger::error(&format!("Error reading stashes: {}", e));
+            Vec::new()
+        }
+    };
+
     ui.repo_view.branch_panel.update_refs(
         &branches,
         &remote_branches,
         &tags,
+        &stashes,
         checked_out_branch.as_deref(),
         Some(&effective_ref),
     );
@@ -188,7 +220,10 @@ pub fn switch_ref(ui: &WindowUi, state: &AppState, ref_name: &str, ref_type: Ref
         .set_branch_head(git::get_main_branch_head(&path, ref_name));
     ui.repo_view
         .commit_list
-        .load_commits(path, ref_name.to_string(), None, {
+        .set_stash_head(stash_head(&path, ref_name));
+    ui.repo_view
+        .commit_list
+        .load_commits(path, ref_name.to_string(), None, None, {
             let current_ref = state.current_ref.clone();
             move |ref_name| {
                 *current_ref.borrow_mut() = Some(ref_name);
@@ -398,13 +433,65 @@ fn poll_file_portal_result(
     }
 }
 
+/// Where a refresh should land when the viewed ref may have moved or gone.
+#[derive(Debug, PartialEq, Eq)]
+enum RefreshTarget {
+    /// The ref still exists (a stash may have been renumbered).
+    Ref(String),
+    /// The ref no longer exists; fall back to the default branch.
+    Gone,
+}
+
+/// Resolve the ref being viewed before a refresh. Stash indices shift as
+/// stashes are pushed and dropped, so a stash is followed by its commit SHA
+/// rather than its `stash@{N}` name.
+fn refresh_target(path: &Path, ref_name: &str, stash_sha: Option<&str>) -> RefreshTarget {
+    if git::is_stash_ref(ref_name) {
+        let renamed = stash_sha.and_then(|sha| {
+            git::get_stash_list(path)
+                .ok()?
+                .into_iter()
+                .find(|s| s.sha == sha)
+        });
+        return match renamed {
+            Some(stash) => RefreshTarget::Ref(stash.name),
+            None => RefreshTarget::Gone,
+        };
+    }
+    if git::branch_exists(path, ref_name) {
+        RefreshTarget::Ref(ref_name.to_string())
+    } else {
+        RefreshTarget::Gone
+    }
+}
+
 pub fn refresh_repo(ui: &WindowUi, state: &AppState, app_name: &str) {
     let path_opt = state.current_path.borrow().clone();
-    let ref_opt = state.current_ref.borrow().clone();
+    let mut ref_opt = state.current_ref.borrow().clone();
     if let Some(path) = path_opt {
         // Capture the currently selected commit SHA so we can keep it
         // focused across the refresh (if it still exists on the ref).
-        let selected_sha = ui.repo_view.commit_list.selected_commit_sha();
+        let mut selected_sha = ui.repo_view.commit_list.selected_commit_sha();
+
+        if let Some(ref_name) = ref_opt.clone() {
+            let stash_sha = ui.repo_view.commit_list.stash_head().map(|(_, sha)| sha);
+            match refresh_target(&path, &ref_name, stash_sha.as_deref()) {
+                RefreshTarget::Ref(name) => ref_opt = Some(name),
+                RefreshTarget::Gone => {
+                    let fallback = git::default_branch_ref(&path);
+                    let what = if git::is_stash_ref(&ref_name) {
+                        "The stash you were viewing".to_string()
+                    } else {
+                        format!("“{ref_name}”")
+                    };
+                    ui.show_toast(&format!("{what} no longer exists. Showing {fallback}."));
+                    // The old selection belongs to the old ref; don't also
+                    // report it missing from the fallback branch.
+                    ref_opt = None;
+                    selected_sha = None;
+                }
+            }
+        }
 
         // Clear diff UI before refreshing to avoid showing stale data
         // from the old commit list (especially important after commit amend)
@@ -455,7 +542,7 @@ fn reset_repo_view(ui: &WindowUi) {
     ui.repo_view.commit_list.clear();
     ui.repo_view
         .branch_panel
-        .update_refs(&[], &[], &[], None, None);
+        .update_refs(&[], &[], &[], &[], None, None);
 
     ui.repo_view.search_bar.set_search_mode(false);
     ui.repo_view.search_entry.set_text("");
@@ -615,6 +702,47 @@ pub fn maybe_load_repo_from_cwd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestRepo;
+
+    #[test]
+    fn refresh_target_follows_stash_when_renumbered() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        let viewed = tr.stash("a.txt", "two\n", "viewed", None).to_string();
+        // A new stash pushes the viewed one from stash@{0} to stash@{1}.
+        tr.stash("a.txt", "three\n", "newer", None);
+
+        assert_eq!(
+            refresh_target(tr.path(), "stash@{0}", Some(&viewed)),
+            RefreshTarget::Ref("stash@{1}".to_string())
+        );
+    }
+
+    #[test]
+    fn refresh_target_reports_dropped_stash_even_if_index_is_reused() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.stash("a.txt", "two\n", "older", None);
+        let viewed = tr.stash("a.txt", "three\n", "viewed", None).to_string();
+        tr.drop_stash(0);
+
+        // stash@{0} still exists, but it is a different stash.
+        assert_eq!(
+            refresh_target(tr.path(), "stash@{0}", Some(&viewed)),
+            RefreshTarget::Gone
+        );
+    }
+
+    #[test]
+    fn refresh_target_reports_deleted_branch() {
+        let mut tr = TestRepo::new();
+        tr.commit("base");
+        assert_eq!(
+            refresh_target(tr.path(), "main", None),
+            RefreshTarget::Ref("main".to_string())
+        );
+        assert_eq!(refresh_target(tr.path(), "gone", None), RefreshTarget::Gone);
+    }
 
     #[test]
     fn paths_for_discovered_repo_uses_root_when_path_and_companion_match() {

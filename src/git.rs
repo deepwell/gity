@@ -245,6 +245,9 @@ pub struct CommitQueryOptions {
     /// Maximum number of parents allowed. NOTE: kept as "exclusive" to preserve existing behavior.
     /// (Old code filtered out commits where `parents >= max_parents_exclusive`.)
     pub max_parents_exclusive: Option<usize>,
+    /// Follow only first parents. Used for stashes so their internal index and
+    /// untracked-files commits don't appear in the history.
+    pub first_parent: bool,
 }
 
 impl CommitQueryOptions {
@@ -259,6 +262,7 @@ impl CommitQueryOptions {
             message_contains: None,
             min_parents: 0,
             max_parents_exclusive: None,
+            first_parent: is_stash_ref(branch_ref),
         }
     }
 }
@@ -318,6 +322,9 @@ impl<'repo> CommitWalker<'repo> {
         }
         if opts.revspecs.is_empty() {
             revwalk.push_head()?;
+        }
+        if opts.first_parent {
+            revwalk.simplify_first_parent()?;
         }
 
         let mut diffopts = DiffOptions::new();
@@ -544,10 +551,20 @@ pub enum RefClassification {
     Branch,
     Remote,
     Tag,
+    Stash,
+}
+
+/// Whether `name` refers to a stash entry (e.g. `stash@{0}`).
+pub fn is_stash_ref(name: &str) -> bool {
+    name.starts_with("stash@{")
 }
 
 /// Classify a ref name as local branch, remote-tracking branch, or tag.
 pub fn classify_ref(path: &Path, ref_name: &str) -> RefClassification {
+    if is_stash_ref(ref_name) {
+        return RefClassification::Stash;
+    }
+
     let Ok(repo) = Repository::open(path) else {
         return RefClassification::Branch;
     };
@@ -611,6 +628,71 @@ pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
     Ok(tag_infos)
 }
 
+#[derive(Clone)]
+pub struct StashInfo {
+    /// Revspec for the entry, e.g. `stash@{0}`.
+    pub name: String,
+    pub message: String,
+    pub sha: String,
+    pub time: DateTime<Utc>,
+}
+
+/// Returns the repository's stash entries, newest first.
+pub fn get_stash_list(path: &Path) -> Result<Vec<StashInfo>, Error> {
+    let mut repo = Repository::open(path)?;
+    let mut entries = Vec::new();
+    repo.stash_foreach(|index, message, oid| {
+        entries.push((index, message.to_string(), *oid));
+        true
+    })?;
+
+    let stashes = entries
+        .into_iter()
+        .filter_map(|(index, message, oid)| {
+            // Skip unreadable entries rather than hiding every stash.
+            let commit = repo.find_commit(oid).ok()?;
+            Some(StashInfo {
+                name: format!("stash@{{{index}}}"),
+                message,
+                sha: oid.to_string(),
+                time: git_time_to_utc(commit.time()),
+            })
+        })
+        .collect();
+    Ok(stashes)
+}
+
+/// Resolves `ref_name` to the SHA of the commit it points to.
+pub fn resolve_ref_sha(path: &Path, ref_name: &str) -> Option<String> {
+    let repo = Repository::open(path).ok()?;
+    let commit = repo.revparse_single(ref_name).ok()?.peel_to_commit().ok()?;
+    Some(commit.id().to_string())
+}
+
+fn is_stash_commit(repo: &mut Repository, oid: git2::Oid) -> Result<bool, Error> {
+    let mut found = false;
+    repo.stash_foreach(|_, _, stash_oid| {
+        found = *stash_oid == oid;
+        !found
+    })?;
+    Ok(found)
+}
+
+/// Diff of a stash entry: the stashed working-tree changes against the commit
+/// the stash was made from, plus any untracked files it saved.
+fn stash_diff(repo: &Repository, stash: &Commit) -> Result<CommitDiff, Error> {
+    let base_tree = stash.parent(0)?.tree()?;
+    let mut diff = commit_diff_from_trees(repo, Some(&base_tree), &stash.tree()?, None)?;
+
+    // `git stash -u` records untracked files as a third, parentless commit.
+    if stash.parents().len() > 2 {
+        let untracked_tree = stash.parent(2)?.tree()?;
+        let untracked = commit_diff_from_trees(repo, None, &untracked_tree, None)?;
+        diff.files.extend(untracked.files);
+    }
+    Ok(diff)
+}
+
 pub struct CommitMetadata {
     pub author_name: String,
     pub author_email: String,
@@ -650,8 +732,14 @@ pub fn get_commit_metadata(path: &str, commit_sha: &str) -> Result<CommitMetadat
 }
 
 pub fn get_commit_diff(path: &str, commit_sha: &str) -> Result<CommitDiff, Error> {
-    let repo = Repository::open(path)?;
+    let mut repo = Repository::open(path)?;
     let commit_oid = git2::Oid::from_str(commit_sha)?;
+
+    if is_stash_commit(&mut repo, commit_oid)? {
+        let commit = repo.find_commit(commit_oid)?;
+        return stash_diff(&repo, &commit);
+    }
+
     let commit = repo.find_commit(commit_oid)?;
 
     let preamble = if commit.parents().len() > 1 {
@@ -1164,5 +1252,67 @@ mod tests {
             !file.patch.contains("diff --git"),
             "patch should not include file headers"
         );
+    }
+
+    #[test]
+    fn get_stash_list_returns_newest_first() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.stash("a.txt", "two\n", "first stash", None);
+        tr.stash("a.txt", "three\n", "second stash", None);
+
+        let stashes = get_stash_list(tr.path()).unwrap();
+        let names: Vec<&str> = stashes.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["stash@{0}", "stash@{1}"]);
+        assert_eq!(
+            stashes[0].sha,
+            tr.repo()
+                .revparse_single("stash@{0}")
+                .unwrap()
+                .id()
+                .to_string()
+        );
+        assert!(stashes[0].message.contains("second stash"));
+        assert!(stashes[1].message.contains("first stash"));
+    }
+
+    #[test]
+    fn classify_ref_recognizes_stash() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.stash("a.txt", "two\n", "wip", None);
+        assert_eq!(
+            classify_ref(tr.path(), "stash@{0}"),
+            RefClassification::Stash
+        );
+    }
+
+    #[test]
+    fn commit_walker_on_stash_skips_internal_commits() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.commit_file("main", "a.txt", "two\n", "second");
+        let stash_oid = tr.stash("a.txt", "three\n", "wip", Some(("new.txt", "hi\n")));
+
+        let commits = collect(tr.repo(), CommitQueryOptions::for_branch("stash@{0}"));
+        assert_eq!(commits[0].id, stash_oid.to_string());
+        assert_eq!(messages(&commits[1..]), vec!["second", "base"]);
+    }
+
+    #[test]
+    fn get_commit_diff_on_stash_includes_untracked_files() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        let stash_oid = tr.stash("a.txt", "two\n", "wip", Some(("new.txt", "hi\n")));
+
+        let diff = get_commit_diff(tr.path().to_str().unwrap(), &stash_oid.to_string()).unwrap();
+        assert!(diff.preamble.is_none());
+        let paths: Vec<&str> = diff
+            .files
+            .iter()
+            .filter_map(|f| f.new_path.as_deref())
+            .collect();
+        assert_eq!(paths, vec!["a.txt", "new.txt"]);
+        assert_eq!(diff.files[1].kind, FileChangeKind::Added);
     }
 }

@@ -1,7 +1,7 @@
 //! Branch panel UI component for displaying and selecting git branches and tags.
 //!
 //! This module provides the `BranchPanel` widget which displays a list of
-//! git branches, tags, and remote-tracking branches with their last commit time and
+//! git branches, tags, stashes, and remote-tracking branches with their last commit time and
 //! allows single-selection. All sections are collapsible with state persisted
 //! to gsettings.
 
@@ -12,14 +12,15 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::APP_ID;
-use crate::git::{BranchInfo, TagInfo};
+use crate::git::{BranchInfo, StashInfo, TagInfo};
 
-/// Type of git reference (branch, remote branch, or tag).
+/// Type of git reference (branch, remote branch, tag, or stash).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefType {
     Branch,
     Remote,
     Tag,
+    Stash,
 }
 
 /// Information about the currently selected reference.
@@ -34,6 +35,7 @@ struct SelectedRef {
 /// The panel shows refs in separate collapsible sections:
 /// - **Branches** — local branches with a checkmark on the checked-out branch
 /// - **Tags**
+/// - **Stashes** — hidden when the repository has no stashes
 /// - **Remotes** — grouped by remote name (e.g. `origin`), each with its own expander
 ///
 /// Branches are sorted with "main" or "master" first, then by latest commit time.
@@ -48,6 +50,8 @@ pub struct BranchPanel {
     branches_list_box: gtk::ListBox,
     /// The list box containing tag rows
     tags_list_box: gtk::ListBox,
+    /// The list box containing stash rows
+    stashes_list_box: gtk::ListBox,
     /// Container for per-remote expanders inside the Remotes section
     remotes_content_box: gtk::Box,
     /// List boxes for remote branch rows (one per remote, rebuilt on refresh)
@@ -56,11 +60,14 @@ pub struct BranchPanel {
     _branches_expander: gtk::Expander,
     /// The expander for tags section (kept for widget lifetime)
     _tags_expander: gtk::Expander,
+    /// The expander for stashes section (hidden when there are no stashes)
+    stashes_expander: gtk::Expander,
     /// The expander for remotes section (kept for widget lifetime)
     _remotes_expander: gtk::Expander,
     /// Section labels used to show ref counts on hover
     branches_label: gtk::Label,
     tags_label: gtk::Label,
+    stashes_label: gtk::Label,
     remotes_label: gtk::Label,
     /// Handler invoked when a ref row is activated (set via `on_ref_selected`)
     activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
@@ -76,7 +83,7 @@ impl BranchPanel {
     /// # Arguments
     /// * `branches` - Slice of branch information to display
     pub fn new(branches: &[BranchInfo]) -> Self {
-        Self::new_with_refs(branches, &[], &[], None, None)
+        Self::new_with_refs(branches, &[], &[], &[], None, None)
     }
 
     /// Create a new BranchPanel with branches, remote branches, tags, and indication of current state.
@@ -85,12 +92,14 @@ impl BranchPanel {
     /// * `branches` - Slice of local branch information to display
     /// * `remote_branches` - Slice of remote-tracking branch information to display
     /// * `tags` - Slice of tag information to display
+    /// * `stashes` - Slice of stash entries to display
     /// * `checked_out_branch` - Name of the currently checked out branch (if any)
     /// * `current_ref_name` - Name of the currently viewed ref (branch or tag)
     pub fn new_with_refs(
         branches: &[BranchInfo],
         remote_branches: &[BranchInfo],
         tags: &[TagInfo],
+        stashes: &[StashInfo],
         checked_out_branch: Option<&str>,
         current_ref_name: Option<&str>,
     ) -> Self {
@@ -162,6 +171,32 @@ impl BranchPanel {
         tags_expander.set_child(Some(&tags_list_box));
         content_box.append(&tags_expander);
 
+        // Create stashes section
+        let stashes_expander = gtk::Expander::builder()
+            .expanded(settings.boolean("stashes-expanded"))
+            .build();
+        stashes_expander.add_css_class("branch-panel-expander");
+
+        let stashes_label = gtk::Label::builder()
+            .label("Stashes")
+            .halign(gtk::Align::Start)
+            .build();
+        stashes_label.add_css_class("heading");
+        let stashes_label_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .build();
+        stashes_label_box.add_css_class("branch-panel-expander-label");
+        stashes_label_box.append(&stashes_label);
+        stashes_expander.set_label_widget(Some(&stashes_label_box));
+        set_expander_chevron_margin(&stashes_expander, 10);
+
+        let stashes_list_box = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .build();
+
+        stashes_expander.set_child(Some(&stashes_list_box));
+        content_box.append(&stashes_expander);
+
         // Create remotes section (after branches and tags)
         let remotes_expander = gtk::Expander::builder()
             .expanded(settings.boolean("remotes-expanded"))
@@ -199,11 +234,11 @@ impl BranchPanel {
 
         populate_branches_list(&branches_list_box, branches, checked_out_branch);
         populate_tags_list(&tags_list_box, tags);
+        populate_stashes_list(&stashes_expander, &stashes_list_box, stashes);
         populate_remotes_section(
             &remotes_content_box,
             &remote_list_boxes,
-            &branches_list_box,
-            &tags_list_box,
+            &[&branches_list_box, &tags_list_box, &stashes_list_box],
             &selected_ref,
             &activate_handler,
             remote_branches,
@@ -211,10 +246,12 @@ impl BranchPanel {
         set_section_count_tooltips(
             &branches_label,
             &tags_label,
+            &stashes_label,
             &remotes_label,
             branches,
             remote_branches,
             tags,
+            stashes,
         );
 
         // Wire up settings persistence for expanded state
@@ -228,14 +265,18 @@ impl BranchPanel {
             let _ = settings_for_tags.set_boolean("tags-expanded", exp.is_expanded());
         });
 
+        let settings_for_stashes = settings.clone();
+        stashes_expander.connect_expanded_notify(move |exp| {
+            let _ = settings_for_stashes.set_boolean("stashes-expanded", exp.is_expanded());
+        });
+
         let settings_for_remotes = settings.clone();
         remotes_expander.connect_expanded_notify(move |exp| {
             let _ = settings_for_remotes.set_boolean("remotes-expanded", exp.is_expanded());
         });
 
         wire_local_list_selection(
-            &branches_list_box,
-            &tags_list_box,
+            &[&branches_list_box, &tags_list_box, &stashes_list_box],
             &remote_list_boxes,
             &selected_ref,
         );
@@ -244,13 +285,16 @@ impl BranchPanel {
             widget: side_panel,
             branches_list_box,
             tags_list_box,
+            stashes_list_box,
             remotes_content_box,
             remote_list_boxes,
             _branches_expander: branches_expander,
             _tags_expander: tags_expander,
+            stashes_expander,
             _remotes_expander: remotes_expander,
             branches_label,
             tags_label,
+            stashes_label,
             remotes_label,
             activate_handler,
             selected_ref,
@@ -267,7 +311,7 @@ impl BranchPanel {
         panel
     }
 
-    /// Update the panel with new lists of branches, remote branches, and tags.
+    /// Update the panel with new lists of branches, remote branches, tags, and stashes.
     ///
     /// Attempts to preserve the current selection if possible.
     pub fn update_refs(
@@ -275,6 +319,7 @@ impl BranchPanel {
         branches: &[BranchInfo],
         remote_branches: &[BranchInfo],
         tags: &[TagInfo],
+        stashes: &[StashInfo],
         checked_out_branch: Option<&str>,
         current_ref_name: Option<&str>,
     ) {
@@ -293,15 +338,23 @@ impl BranchPanel {
             self.tags_list_box.remove(&row);
         }
 
+        while let Some(row) = self.stashes_list_box.row_at_index(0) {
+            self.stashes_list_box.remove(&row);
+        }
+
         clear_remotes_section(&self.remotes_content_box, &self.remote_list_boxes);
 
         populate_branches_list(&self.branches_list_box, branches, checked_out_branch);
         populate_tags_list(&self.tags_list_box, tags);
+        populate_stashes_list(&self.stashes_expander, &self.stashes_list_box, stashes);
         populate_remotes_section(
             &self.remotes_content_box,
             &self.remote_list_boxes,
-            &self.branches_list_box,
-            &self.tags_list_box,
+            &[
+                &self.branches_list_box,
+                &self.tags_list_box,
+                &self.stashes_list_box,
+            ],
             &self.selected_ref,
             &self.activate_handler,
             remote_branches,
@@ -309,10 +362,12 @@ impl BranchPanel {
         set_section_count_tooltips(
             &self.branches_label,
             &self.tags_label,
+            &self.stashes_label,
             &self.remotes_label,
             branches,
             remote_branches,
             tags,
+            stashes,
         );
 
         if let Some(ref_info) = preserved {
@@ -328,53 +383,26 @@ impl BranchPanel {
     /// Select a ref by name.
     ///
     /// # Arguments
-    /// * `ref_name` - Name of the branch or tag to select
+    /// * `ref_name` - Name of the branch, remote branch, tag, or stash to select
     ///
     /// # Returns
     /// `true` if the ref was found and selected, `false` otherwise.
     pub fn select_ref(&self, ref_name: &str) -> bool {
-        // Search in branches list
-        let mut i = 0;
-        while let Some(row) = self.branches_list_box.row_at_index(i) {
-            if let Some(ref_info) = row_ref_info(&row) {
-                if ref_info.name == ref_name {
-                    self.branches_list_box.select_row(Some(&row));
-                    *self.selected_ref.borrow_mut() = Some(ref_info);
-                    return true;
-                }
-            }
-            i += 1;
-        }
+        let remote_list_boxes = self.remote_list_boxes.borrow();
+        let found = [&self.branches_list_box]
+            .into_iter()
+            .chain(remote_list_boxes.iter())
+            .chain([&self.tags_list_box, &self.stashes_list_box])
+            .find_map(|list_box| {
+                find_row_by_ref_name(list_box, ref_name).map(|row| (list_box, row))
+            });
 
-        // Search in remote branch list boxes
-        for list_box in self.remote_list_boxes.borrow().iter() {
-            let mut i = 0;
-            while let Some(row) = list_box.row_at_index(i) {
-                if let Some(ref_info) = row_ref_info(&row) {
-                    if ref_info.name == ref_name {
-                        list_box.select_row(Some(&row));
-                        *self.selected_ref.borrow_mut() = Some(ref_info);
-                        return true;
-                    }
-                }
-                i += 1;
-            }
-        }
-
-        // Search in tags list
-        let mut i = 0;
-        while let Some(row) = self.tags_list_box.row_at_index(i) {
-            if let Some(ref_info) = row_ref_info(&row) {
-                if ref_info.name == ref_name {
-                    self.tags_list_box.select_row(Some(&row));
-                    *self.selected_ref.borrow_mut() = Some(ref_info);
-                    return true;
-                }
-            }
-            i += 1;
-        }
-
-        false
+        let Some((list_box, (row, ref_info))) = found else {
+            return false;
+        };
+        list_box.select_row(Some(&row));
+        *self.selected_ref.borrow_mut() = Some(ref_info);
+        true
     }
 
     /// Register a callback for when a ref is selected (activated).
@@ -395,11 +423,20 @@ impl BranchPanel {
         });
 
         let selected_ref = self.selected_ref.clone();
-        let handler_for_tags = handler;
+        let handler_for_tags = handler.clone();
         self.tags_list_box.connect_row_activated(move |_, row| {
             if let Some(ref_info) = row_ref_info(row) {
                 *selected_ref.borrow_mut() = Some(ref_info.clone());
                 handler_for_tags(&ref_info.name, ref_info.ref_type);
+            }
+        });
+
+        let selected_ref = self.selected_ref.clone();
+        let handler_for_stashes = handler;
+        self.stashes_list_box.connect_row_activated(move |_, row| {
+            if let Some(ref_info) = row_ref_info(row) {
+                *selected_ref.borrow_mut() = Some(ref_info.clone());
+                handler_for_stashes(&ref_info.name, ref_info.ref_type);
             }
         });
 
@@ -416,6 +453,11 @@ impl BranchPanel {
                     .and_then(|r| row_ref_info(&r))
             })
             .or_else(|| {
+                self.stashes_list_box
+                    .selected_row()
+                    .and_then(|r| row_ref_info(&r))
+            })
+            .or_else(|| {
                 self.remote_list_boxes
                     .borrow()
                     .iter()
@@ -426,6 +468,7 @@ impl BranchPanel {
     fn any_row_selected(&self) -> bool {
         self.branches_list_box.selected_row().is_some()
             || self.tags_list_box.selected_row().is_some()
+            || self.stashes_list_box.selected_row().is_some()
             || self
                 .remote_list_boxes
                 .borrow()
@@ -488,8 +531,7 @@ fn populate_branches_list(
 fn populate_remotes_section(
     content_box: &gtk::Box,
     remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
-    branches_list_box: &gtk::ListBox,
-    tags_list_box: &gtk::ListBox,
+    local_list_boxes: &[&gtk::ListBox],
     selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
     activate_handler: &Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
     remote_branches: &[BranchInfo],
@@ -525,8 +567,7 @@ fn populate_remotes_section(
 
         wire_remote_list_box(
             &list_box,
-            branches_list_box,
-            tags_list_box,
+            local_list_boxes,
             remote_list_boxes,
             selected_ref,
             activate_handler,
@@ -576,60 +617,50 @@ fn remote_branch_short_name(full_name: &str) -> &str {
         .unwrap_or(full_name)
 }
 
+/// Keep selection exclusive across the branch, tag, stash, and remote lists.
 fn wire_local_list_selection(
-    branches_list_box: &gtk::ListBox,
-    tags_list_box: &gtk::ListBox,
+    local_list_boxes: &[&gtk::ListBox],
     remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
     selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
 ) {
-    let tags_for_branches = tags_list_box.clone();
-    let remotes_for_branches = remote_list_boxes.clone();
-    let selected_for_branches = selected_ref.clone();
-    branches_list_box.connect_row_selected(move |_, row| {
-        if row.is_some() {
-            tags_for_branches.unselect_all();
-            unselect_remote_lists(&remotes_for_branches, None);
+    for &list_box in local_list_boxes {
+        let others: Vec<gtk::ListBox> = local_list_boxes
+            .iter()
+            .filter(|&&lb| lb != list_box)
+            .map(|&lb| lb.clone())
+            .collect();
+        let remotes = remote_list_boxes.clone();
+        let selected = selected_ref.clone();
+        list_box.connect_row_selected(move |_, row| {
             if let Some(r) = row {
+                for lb in &others {
+                    lb.unselect_all();
+                }
+                unselect_remote_lists(&remotes, None);
                 if let Some(ref_info) = row_ref_info(r) {
-                    *selected_for_branches.borrow_mut() = Some(ref_info);
+                    *selected.borrow_mut() = Some(ref_info);
                 }
             }
-        }
-    });
-
-    let branches_for_tags = branches_list_box.clone();
-    let remotes_for_tags = remote_list_boxes.clone();
-    let selected_for_tags = selected_ref.clone();
-    tags_list_box.connect_row_selected(move |_, row| {
-        if row.is_some() {
-            branches_for_tags.unselect_all();
-            unselect_remote_lists(&remotes_for_tags, None);
-            if let Some(r) = row {
-                if let Some(ref_info) = row_ref_info(r) {
-                    *selected_for_tags.borrow_mut() = Some(ref_info);
-                }
-            }
-        }
-    });
+        });
+    }
 }
 
 fn wire_remote_list_box(
     list_box: &gtk::ListBox,
-    branches_list_box: &gtk::ListBox,
-    tags_list_box: &gtk::ListBox,
+    local_list_boxes: &[&gtk::ListBox],
     remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
     selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
     activate_handler: &Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
 ) {
-    let branches_lb = branches_list_box.clone();
-    let tags_lb = tags_list_box.clone();
+    let local_lbs: Vec<gtk::ListBox> = local_list_boxes.iter().map(|&lb| lb.clone()).collect();
     let remotes_rc = remote_list_boxes.clone();
     let this_lb = list_box.clone();
     let selected = selected_ref.clone();
     list_box.connect_row_selected(move |_, row| {
         if row.is_some() {
-            branches_lb.unselect_all();
-            tags_lb.unselect_all();
+            for lb in &local_lbs {
+                lb.unselect_all();
+            }
             unselect_remote_lists(&remotes_rc, Some(&this_lb));
             if let Some(r) = row {
                 if let Some(ref_info) = row_ref_info(r) {
@@ -662,6 +693,29 @@ fn unselect_remote_lists(
     }
 }
 
+/// Find the row in `list_box` whose ref is named `ref_name`.
+fn find_row_by_ref_name(
+    list_box: &gtk::ListBox,
+    ref_name: &str,
+) -> Option<(gtk::ListBoxRow, SelectedRef)> {
+    let mut i = 0;
+    while let Some(row) = list_box.row_at_index(i) {
+        if let Some(ref_info) = row_ref_info(&row).filter(|info| info.name == ref_name) {
+            return Some((row, ref_info));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Populate the stashes list box, hiding the section when there are none.
+fn populate_stashes_list(expander: &gtk::Expander, list_box: &gtk::ListBox, stashes: &[StashInfo]) {
+    for stash_info in stashes {
+        list_box.append(&create_stash_row(stash_info));
+    }
+    expander.set_visible(!stashes.is_empty());
+}
+
 /// Populate the tags list box.
 fn populate_tags_list(list_box: &gtk::ListBox, tags: &[TagInfo]) {
     let sorted_tags = sort_tags(tags);
@@ -680,17 +734,21 @@ fn format_count_tooltip(count: usize, singular: &str, plural: &str) -> String {
     }
 }
 
-/// Show branch, tag, and remote totals on the section labels.
+/// Show branch, tag, stash, and remote totals on the section labels.
+#[allow(clippy::too_many_arguments)]
 fn set_section_count_tooltips(
     branches_label: &gtk::Label,
     tags_label: &gtk::Label,
+    stashes_label: &gtk::Label,
     remotes_label: &gtk::Label,
     branches: &[BranchInfo],
     remote_branches: &[BranchInfo],
     tags: &[TagInfo],
+    stashes: &[StashInfo],
 ) {
     set_label_count_tooltip(branches_label, branches.len(), "branch", "branches");
     set_label_count_tooltip(tags_label, tags.len(), "tag", "tags");
+    set_label_count_tooltip(stashes_label, stashes.len(), "stash", "stashes");
     set_label_count_tooltip(
         remotes_label,
         group_remote_branches(remote_branches).len(),
@@ -736,6 +794,12 @@ fn row_ref_info(row: &gtk::ListBoxRow) -> Option<SelectedRef> {
         return Some(SelectedRef {
             name: full.to_string(),
             ref_type: RefType::Remote,
+        });
+    }
+    if let Some(name) = row_name.as_str().strip_prefix("stash-ref:") {
+        return Some(SelectedRef {
+            name: name.to_string(),
+            ref_type: RefType::Stash,
         });
     }
 
@@ -941,6 +1005,54 @@ fn create_tag_row(tag_info: &TagInfo) -> gtk::ListBoxRow {
     row_box.set_hexpand(true);
 
     let row = gtk::ListBoxRow::new();
+    row.set_child(Some(&row_box));
+    row
+}
+
+/// Create a GTK row widget for a stash entry.
+fn create_stash_row(stash_info: &StashInfo) -> gtk::ListBoxRow {
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(6)
+        .spacing(8)
+        .build();
+
+    // Placeholder for checkmark (keeps alignment consistent with branches)
+    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
+    check_icon.set_pixel_size(16);
+    check_icon.set_opacity(0.0);
+    row_box.append(&check_icon);
+
+    let stash_label = gtk::Label::builder().halign(gtk::Align::Start).build();
+    stash_label.set_text(&stash_info.message);
+    stash_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    stash_label.set_tooltip_text(Some(&format!(
+        "{}: {}",
+        stash_info.name, stash_info.message
+    )));
+    row_box.append(&stash_label);
+
+    let time_label = gtk::Label::builder()
+        .halign(gtk::Align::End)
+        .hexpand(true)
+        .build();
+
+    let time_ago = format_time_ago(stash_info.time);
+    let markup = format!(
+        "<span size='small'>{}</span>",
+        gtk::glib::markup_escape_text(&time_ago)
+    );
+    time_label.set_markup(&markup);
+    time_label.add_css_class("dim-label");
+
+    row_box.append(&time_label);
+    row_box.set_hexpand(true);
+
+    let row = gtk::ListBoxRow::new();
+    row.set_widget_name(&format!("stash-ref:{}", stash_info.name));
     row.set_child(Some(&row_box));
     row
 }

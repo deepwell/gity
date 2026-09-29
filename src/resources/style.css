@@ -36,6 +36,16 @@
 }
 
 /* Upstream (remote tracking) branch chip */
+/* Stash chip (e.g. "stash@{0}" on the stash commit) */
+.stash-chip {
+    background-color: alpha(@warning_bg_color, 0.15);
+    color: @warning_color;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
 .upstream-chip {
     background-color: alpha(@window_bg_color, 0.8);
     color: @insensitive_fg_color;

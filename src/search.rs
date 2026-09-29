@@ -14,6 +14,10 @@ pub type SearchState = Arc<Mutex<(String, Vec<u32>, usize)>>;
 struct OidIndexKey {
     repo_path: PathBuf,
     branch_ref: String,
+    /// Commit the ref pointed to when the index was built. Refs like
+    /// `stash@{0}` or a branch after a new commit keep their name but move, so
+    /// the name alone can't tell a stale index from a fresh one.
+    tip: Option<Oid>,
 }
 
 #[derive(Debug)]
@@ -78,6 +82,9 @@ impl OidIndexCache {
         if opts.revspecs.is_empty() {
             revwalk.push_head()?;
         }
+        if opts.first_parent {
+            revwalk.simplify_first_parent()?;
+        }
 
         let mut out: Vec<Oid> = Vec::new();
         for oid_res in revwalk {
@@ -98,6 +105,9 @@ impl OidIndexCache {
         let wanted = OidIndexKey {
             repo_path: repo_path.clone(),
             branch_ref: branch_ref.to_string(),
+            tip: Repository::open(repo_path)
+                .and_then(|repo| repo.revparse_single(branch_ref).map(|obj| obj.id()))
+                .ok(),
         };
 
         loop {
@@ -1014,5 +1024,43 @@ mod tests {
             .find_matching_indices_in_repo(&path, "feature", "x")
             .unwrap();
         assert_eq!(on_feature.len(), 5);
+    }
+
+    #[test]
+    fn oid_index_cache_invalidates_when_ref_moves() {
+        let mut tr = TestRepo::new();
+        tr.commit("x1");
+        tr.commit("x2");
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+
+        let before = handler
+            .find_matching_indices_in_repo(&path, "main", "x")
+            .unwrap();
+        assert_eq!(before.len(), 2);
+
+        // Same ref name, new tip: the cached index must not be reused.
+        tr.commit("x3");
+        let after = handler
+            .find_matching_indices_in_repo(&path, "main", "x")
+            .unwrap();
+        assert_eq!(after.len(), 3);
+    }
+
+    #[test]
+    fn search_on_stash_skips_internal_commits() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.stash("a.txt", "two\n", "wip", Some(("new.txt", "hi\n")));
+
+        let handler = SearchHandler::new();
+        let path = tr.path().to_path_buf();
+
+        // Indices must line up with the commit list: [stash, base].
+        let matches = handler
+            .find_matching_indices_in_repo(&path, "stash@{0}", "base")
+            .unwrap();
+        assert_eq!(matches, vec![1]);
     }
 }

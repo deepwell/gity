@@ -294,6 +294,35 @@ impl TestRepo {
             .expect("annotated tag");
     }
 
+    /// Overwrite tracked `file` on `main` with `contents` (and optionally write an
+    /// untracked file), then stash the changes. Returns the stash commit id.
+    pub fn stash(
+        &mut self,
+        file: &str,
+        contents: &str,
+        message: &str,
+        untracked: Option<(&str, &str)>,
+    ) -> Oid {
+        self.checkout("main");
+        let workdir = self.repo.workdir().expect("workdir").to_path_buf();
+        std::fs::write(workdir.join(file), contents).expect("write file");
+        let mut flags = git2::StashFlags::DEFAULT;
+        if let Some((name, body)) = untracked {
+            std::fs::write(workdir.join(name), body).expect("write untracked file");
+            flags |= git2::StashFlags::INCLUDE_UNTRACKED;
+        }
+        let when = self.next_time();
+        let sig = Signature::new("Tester", "tester@example.com", &when).unwrap();
+        self.repo
+            .stash_save(&sig, message, Some(flags))
+            .expect("stash save")
+    }
+
+    /// Drop the stash entry at `index` (as `git stash drop stash@{index}`).
+    pub fn drop_stash(&mut self, index: usize) {
+        self.repo.stash_drop(index).expect("stash drop");
+    }
+
     /// Create a remote-tracking ref, e.g. `name = "origin/main"`.
     pub fn create_remote_ref(&self, name: &str, target: Oid) {
         self.repo

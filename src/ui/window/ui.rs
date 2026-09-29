@@ -22,6 +22,9 @@ pub struct WindowUi {
     // Root navigation stack
     pub stack: gtk::Stack,
 
+    // Wraps the stack so brief notices can be shown over either screen
+    toast_overlay: adw::ToastOverlay,
+
     // Repository screen (search + panels + diff)
     pub repo_view: RepoView,
 
@@ -107,7 +110,9 @@ impl WindowUi {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(200)
             .build();
-        window.set_child(Some(&stack));
+        let toast_overlay = adw::ToastOverlay::new();
+        toast_overlay.set_child(Some(&stack));
+        window.set_child(Some(&toast_overlay));
 
         // Repository view (search + panels + diff)
         let repo_view = RepoView::new(&window);
@@ -125,6 +130,7 @@ impl WindowUi {
             open_button,
             search_button,
             stack,
+            toast_overlay,
             repo_view,
             welcome_view,
             refresh_action: Rc::new(RefCell::new(None)),
@@ -201,6 +207,16 @@ impl WindowUi {
             format!("{} - {} - {}", repo_name, branch, self.app_name)
         };
         self.window.set_title(Some(&os_title));
+    }
+
+    /// Show a brief notice at the bottom of the window. `message` is plain
+    /// text, so ref names containing markup characters display as-is.
+    pub fn show_toast(&self, message: &str) {
+        let toast = adw::Toast::builder()
+            .title(message)
+            .use_markup(false)
+            .build();
+        self.toast_overlay.add_toast(toast);
     }
 
     pub fn show_main(&self) {

@@ -62,6 +62,9 @@ pub struct CommitPagingState {
     /// Number of pages auto-loaded so far while searching for
     /// `pending_select_sha`. Bounded by `MAX_PENDING_SELECT_PAGES`.
     pub pending_select_pages_loaded: u32,
+    /// Called when `pending_select_sha` could not be found and the first
+    /// commit was selected instead.
+    pub on_pending_select_missing: Option<Box<dyn Fn()>>,
 }
 
 /// A scrollable list widget displaying git commits with infinite scroll support.
@@ -92,6 +95,8 @@ pub struct CommitList {
     upstream: Rc<RefCell<Option<(String, String)>>>,
     /// Primary branch head: (branch_name, commit_sha) to show a chip when viewing another branch.
     branch_head: Rc<RefCell<Option<(String, String)>>>,
+    /// Viewed stash: (stash_name, commit_sha) to show a chip on the stash commit.
+    stash_head: Rc<RefCell<Option<(String, String)>>>,
 }
 
 impl CommitList {
@@ -104,6 +109,7 @@ impl CommitList {
         let tags: Rc<RefCell<HashMap<String, Vec<String>>>> = Rc::new(RefCell::new(HashMap::new()));
         let upstream: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let branch_head: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
+        let stash_head: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
 
         // Create column factories
         let message_column = create_message_column_with_tags(
@@ -112,6 +118,7 @@ impl CommitList {
             tags.clone(),
             upstream.clone(),
             branch_head.clone(),
+            stash_head.clone(),
         );
         let author_column = create_column("Author", 150, false, |c: &GitCommit| c.author.clone());
         let sha_column = create_column("SHA", 120, false, |c: &GitCommit| short_sha(&c.id));
@@ -142,6 +149,7 @@ impl CommitList {
             tags,
             upstream,
             branch_head,
+            stash_head,
         }
     }
 
@@ -153,12 +161,15 @@ impl CommitList {
     /// * `initial_selection_sha` - Optional SHA to select once it appears in
     ///   the loaded commits (used to preserve selection across a refresh).
     ///   If `None`, the first commit is auto-selected on first page.
+    /// * `on_selection_missing` - Called if `initial_selection_sha` is not
+    ///   found and the first commit is selected instead
     /// * `on_first_page_branch` - Callback invoked with the branch name when the first page loads
     pub fn load_commits(
         &self,
         path: PathBuf,
         branch_ref: String,
         initial_selection_sha: Option<String>,
+        on_selection_missing: Option<Box<dyn Fn()>>,
         on_first_page_branch: impl Fn(String) + 'static,
     ) {
         let on_first_page_branch: Rc<dyn Fn(String)> = Rc::new(on_first_page_branch);
@@ -171,6 +182,7 @@ impl CommitList {
             path,
             branch_ref,
             initial_selection_sha,
+            on_selection_missing,
             on_first_page_branch,
         );
     }
@@ -212,6 +224,21 @@ impl CommitList {
         if n_items > 0 {
             self.store.items_changed(0, n_items, n_items);
         }
+    }
+
+    /// Set the viewed stash. When set, a chip (e.g. "stash@{0}") is shown on the
+    /// stash commit. Pass `None` to hide the chip.
+    pub fn set_stash_head(&self, stash_head: Option<(String, String)>) {
+        *self.stash_head.borrow_mut() = stash_head;
+        let n_items = self.store.n_items();
+        if n_items > 0 {
+            self.store.items_changed(0, n_items, n_items);
+        }
+    }
+
+    /// The viewed stash as (stash_name, commit_sha), if a stash is shown.
+    pub fn stash_head(&self) -> Option<(String, String)> {
+        self.stash_head.borrow().clone()
     }
 
     /// Return indices of all selected commits in list order.
@@ -260,12 +287,14 @@ impl CommitList {
             st.pending_first_page_log = None;
             st.pending_select_sha = None;
             st.pending_select_pages_loaded = 0;
+            st.on_pending_select_missing = None;
         }
 
-        // Clear tags, upstream, and branch head.
+        // Clear tags, upstream, branch head, and stash head.
         self.tags.borrow_mut().clear();
         *self.upstream.borrow_mut() = None;
         *self.branch_head.borrow_mut() = None;
+        *self.stash_head.borrow_mut() = None;
 
         // Clear UI list + selection.
         self.store.remove_all();
@@ -385,7 +414,19 @@ fn create_upstream_chip() -> gtk::Label {
     chip
 }
 
-/// Create the message column with branch head, upstream, and tag chip support.
+/// Create a pre-allocated stash chip label (hidden by default).
+fn create_stash_chip() -> gtk::Label {
+    let chip = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
+    chip.add_css_class("stash-chip");
+    chip.set_widget_name("stash-chip");
+    chip
+}
+
+/// Create the message column with branch head, upstream, stash, and tag chip support.
 /// Chips are pre-allocated during setup to avoid GTK state tracking issues.
 fn create_message_column_with_tags(
     title: &str,
@@ -393,6 +434,7 @@ fn create_message_column_with_tags(
     tags: Rc<RefCell<HashMap<String, Vec<String>>>>,
     upstream: Rc<RefCell<Option<(String, String)>>>,
     branch_head: Rc<RefCell<Option<(String, String)>>>,
+    stash_head: Rc<RefCell<Option<(String, String)>>>,
 ) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
 
@@ -410,6 +452,10 @@ fn create_message_column_with_tags(
         // Upstream chip (one per row, shown when commit is upstream HEAD)
         let upstream_chip = create_upstream_chip();
         container.append(&upstream_chip);
+
+        // Stash chip (shown on the stash commit when viewing a stash)
+        let stash_chip = create_stash_chip();
+        container.append(&stash_chip);
 
         // Pre-allocate tag chip labels (hidden by default)
         for _ in 0..MAX_TAG_CHIPS {
@@ -431,6 +477,7 @@ fn create_message_column_with_tags(
     let tags_for_bind = tags.clone();
     let upstream_for_bind = upstream.clone();
     let branch_head_for_bind = branch_head.clone();
+    let stash_head_for_bind = stash_head.clone();
     factory.connect_bind(move |_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         let container = item.child().and_downcast::<gtk::Box>().unwrap();
@@ -441,6 +488,7 @@ fn create_message_column_with_tags(
         let commit_tags = tags_map.get(&commit.id);
         let upstream_opt = upstream_for_bind.borrow().clone();
         let branch_head_opt = branch_head_for_bind.borrow().clone();
+        let stash_head_opt = stash_head_for_bind.borrow().clone();
 
         let mut chip_index = 0;
         let mut child = container.first_child();
@@ -469,6 +517,16 @@ fn create_message_column_with_tags(
                         }
                     } else {
                         chip.set_visible(false);
+                    }
+                }
+            } else if widget.widget_name() == "stash-chip" {
+                if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
+                    match stash_head_opt.as_ref() {
+                        Some((name, sha)) if commit.id == *sha => {
+                            chip.set_label(name);
+                            chip.set_visible(true);
+                        }
+                        _ => chip.set_visible(false),
                     }
                 }
             } else if widget.widget_name() == "tag-chip" {
@@ -502,7 +560,11 @@ fn create_message_column_with_tags(
             let mut child = container.first_child();
             while let Some(widget) = child {
                 let name = widget.widget_name();
-                if name == "branch-chip" || name == "upstream-chip" || name == "tag-chip" {
+                if name == "branch-chip"
+                    || name == "upstream-chip"
+                    || name == "stash-chip"
+                    || name == "tag-chip"
+                {
                     widget.set_visible(false);
                 }
                 child = widget.next_sibling();
@@ -634,7 +696,10 @@ fn poll_commit_pages(
                             &selection_model,
                             idx,
                         );
-                        paging_state.borrow_mut().pending_select_sha = None;
+                        let mut st = paging_state.borrow_mut();
+                        st.pending_select_sha = None;
+                        st.on_pending_select_missing = None;
+                        drop(st);
                         found_pending_target = true;
                     }
                 }
@@ -674,9 +739,13 @@ fn poll_commit_pages(
                             st.done || st.pending_select_pages_loaded >= MAX_PENDING_SELECT_PAGES;
                         if exhausted {
                             st.pending_select_sha = None;
+                            let on_missing = st.on_pending_select_missing.take();
                             drop(st);
                             if selection_model.selection().is_empty() && store.n_items() > 0 {
                                 selection_model.select_item(0, true);
+                            }
+                            if let Some(on_missing) = on_missing {
+                                on_missing();
                             }
                         } else if !st.is_loading {
                             if let Some(tx) = st.request_tx.clone() {
@@ -742,6 +811,7 @@ fn start_commit_paging(
     path: PathBuf,
     branch_ref: String,
     initial_selection_sha: Option<String>,
+    on_selection_missing: Option<Box<dyn Fn()>>,
     on_first_page_branch: Rc<dyn Fn(String)>,
 ) {
     // Clear existing items + cancel any in-flight worker.
@@ -759,6 +829,7 @@ fn start_commit_paging(
         st.done = false;
         st.pending_select_sha = initial_selection_sha;
         st.pending_select_pages_loaded = 0;
+        st.on_pending_select_missing = on_selection_missing;
     }
 
     // New generation for this load.
