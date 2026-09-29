@@ -273,9 +273,14 @@ impl RepoView {
         commit_title_label.add_css_class("commit-title");
 
         // Metadata subtitle: author name <email> + authored/committed dates.
+        // Wrap so a long subtitle can't force the diff pane (and with it the
+        // commit list columns) wider than the available space.
         let diff_metadata_label = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::Start)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .natural_wrap_mode(gtk::NaturalWrapMode::None)
             .selectable(true)
             .build();
         diff_metadata_label.set_xalign(0.0);
