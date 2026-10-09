@@ -292,10 +292,15 @@ impl SearchController {
 
     pub fn action_hide_search(&self, ui: &WindowUi) -> gio::ActionEntry<gtk::ApplicationWindow> {
         let search_bar = ui.repo_view.search_bar.clone();
+        let branch_panel = ui.repo_view.branch_panel.clone();
         gio::ActionEntry::builder("hide-search")
             .activate(move |_, _, _| {
-                if search_bar.is_search_mode() {
+                // Close the ref filter if that is where the user is typing,
+                // otherwise the commit search first and the ref filter after.
+                if search_bar.is_search_mode() && !branch_panel.filter_has_focus() {
                     search_bar.set_search_mode(false);
+                } else {
+                    branch_panel.hide_filter();
                 }
             })
             .build()

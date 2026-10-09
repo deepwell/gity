@@ -3,7 +3,8 @@
 //! This module provides the `BranchPanel` widget which displays a list of
 //! git branches, tags, stashes, and remote-tracking branches with their last commit time and
 //! allows single-selection. All sections are collapsible with state persisted
-//! to gsettings.
+//! to gsettings. A filter bar (hidden until requested) narrows every section
+//! to the refs matching the typed text.
 
 use chrono::{DateTime, Utc};
 use gtk::{gio, prelude::*};
@@ -42,10 +43,21 @@ struct SelectedRef {
 /// Tags are sorted alphabetically using natural sort order.
 ///
 /// Expanded/collapsed state is persisted to gsettings.
+///
+/// A filter bar above the sections (see `show_filter`) hides the refs that do
+/// not match the typed text.
 #[derive(Clone)]
 pub struct BranchPanel {
     /// The root widget container
     pub widget: gtk::Box,
+    /// The search bar holding the filter entry (hidden until `show_filter`)
+    filter_bar: gtk::SearchBar,
+    /// The entry whose text filters the ref rows
+    filter_entry: gtk::SearchEntry,
+    /// Lowercased filter text, shared with each list box's filter function
+    filter_query: Rc<RefCell<String>>,
+    /// Shown instead of the sections when the filter matches no refs
+    no_matches_label: gtk::Label,
     /// The list box containing branch rows
     branches_list_box: gtk::ListBox,
     /// The list box containing tag rows
@@ -56,14 +68,14 @@ pub struct BranchPanel {
     remotes_content_box: gtk::Box,
     /// List boxes for remote branch rows (one per remote, rebuilt on refresh)
     remote_list_boxes: Rc<RefCell<Vec<gtk::ListBox>>>,
-    /// The expander for branches section (kept for widget lifetime)
-    _branches_expander: gtk::Expander,
-    /// The expander for tags section (kept for widget lifetime)
-    _tags_expander: gtk::Expander,
+    /// The expander for branches section
+    branches_expander: gtk::Expander,
+    /// The expander for tags section
+    tags_expander: gtk::Expander,
     /// The expander for stashes section (hidden when there are no stashes)
     stashes_expander: gtk::Expander,
-    /// The expander for remotes section (kept for widget lifetime)
-    _remotes_expander: gtk::Expander,
+    /// The expander for remotes section
+    remotes_expander: gtk::Expander,
     /// Section labels used to show ref counts on hover
     branches_label: gtk::Label,
     tags_label: gtk::Label,
@@ -73,8 +85,8 @@ pub struct BranchPanel {
     activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
     /// Currently selected reference (name and type)
     selected_ref: Rc<RefCell<Option<SelectedRef>>>,
-    /// GSettings for persisting expanded state (kept for reference lifetime)
-    _settings: gio::Settings,
+    /// GSettings for persisting expanded state
+    settings: gio::Settings,
 }
 
 impl BranchPanel {
@@ -111,6 +123,17 @@ impl BranchPanel {
             .build();
         side_panel.set_width_request(150);
 
+        // Filter bar, revealed by `show_filter`. Connecting the entry lets the
+        // bar close itself on Escape and clear the text when it closes.
+        let filter_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Filter by name")
+            .hexpand(true)
+            .build();
+        let filter_bar = gtk::SearchBar::builder().child(&filter_entry).build();
+        filter_bar.connect_entry(&filter_entry);
+        side_panel.append(&filter_bar);
+        let filter_query = Rc::new(RefCell::new(String::new()));
+
         // Create a scrolled window for the content
         let scrolled = gtk::ScrolledWindow::builder().vexpand(true).build();
 
@@ -118,6 +141,18 @@ impl BranchPanel {
         let content_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .build();
+
+        let no_matches_label = gtk::Label::builder()
+            .label("No matching branches, tags, or stashes")
+            .wrap(true)
+            .justify(gtk::Justification::Center)
+            .margin_top(24)
+            .margin_start(12)
+            .margin_end(12)
+            .visible(false)
+            .build();
+        no_matches_label.add_css_class("dim-label");
+        content_box.append(&no_matches_label);
 
         // Create branches section
         let branches_expander = gtk::Expander::builder()
@@ -141,6 +176,8 @@ impl BranchPanel {
         let branches_list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .build();
+
+        set_ref_filter_func(&branches_list_box, &filter_query);
 
         branches_expander.set_child(Some(&branches_list_box));
         content_box.append(&branches_expander);
@@ -168,6 +205,8 @@ impl BranchPanel {
             .selection_mode(gtk::SelectionMode::Single)
             .build();
 
+        set_ref_filter_func(&tags_list_box, &filter_query);
+
         tags_expander.set_child(Some(&tags_list_box));
         content_box.append(&tags_expander);
 
@@ -193,6 +232,8 @@ impl BranchPanel {
         let stashes_list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .build();
+
+        set_ref_filter_func(&stashes_list_box, &filter_query);
 
         stashes_expander.set_child(Some(&stashes_list_box));
         content_box.append(&stashes_expander);
@@ -241,6 +282,7 @@ impl BranchPanel {
             &[&branches_list_box, &tags_list_box, &stashes_list_box],
             &selected_ref,
             &activate_handler,
+            &filter_query,
             remote_branches,
         );
         set_section_count_tooltips(
@@ -254,26 +296,22 @@ impl BranchPanel {
             stashes,
         );
 
-        // Wire up settings persistence for expanded state
-        let settings_for_branches = settings.clone();
-        branches_expander.connect_expanded_notify(move |exp| {
-            let _ = settings_for_branches.set_boolean("branches-expanded", exp.is_expanded());
-        });
-
-        let settings_for_tags = settings.clone();
-        tags_expander.connect_expanded_notify(move |exp| {
-            let _ = settings_for_tags.set_boolean("tags-expanded", exp.is_expanded());
-        });
-
-        let settings_for_stashes = settings.clone();
-        stashes_expander.connect_expanded_notify(move |exp| {
-            let _ = settings_for_stashes.set_boolean("stashes-expanded", exp.is_expanded());
-        });
-
-        let settings_for_remotes = settings.clone();
-        remotes_expander.connect_expanded_notify(move |exp| {
-            let _ = settings_for_remotes.set_boolean("remotes-expanded", exp.is_expanded());
-        });
+        // Wire up settings persistence for expanded state. Filtering expands
+        // every section temporarily, which must not overwrite the saved state.
+        for (expander, key) in [
+            (&branches_expander, "branches-expanded"),
+            (&tags_expander, "tags-expanded"),
+            (&stashes_expander, "stashes-expanded"),
+            (&remotes_expander, "remotes-expanded"),
+        ] {
+            let settings = settings.clone();
+            let filter_query = filter_query.clone();
+            expander.connect_expanded_notify(move |exp| {
+                if filter_query.borrow().is_empty() {
+                    let _ = settings.set_boolean(key, exp.is_expanded());
+                }
+            });
+        }
 
         wire_local_list_selection(
             &[&branches_list_box, &tags_list_box, &stashes_list_box],
@@ -283,23 +321,49 @@ impl BranchPanel {
 
         let panel = Self {
             widget: side_panel,
+            filter_bar,
+            filter_entry,
+            filter_query,
+            no_matches_label,
             branches_list_box,
             tags_list_box,
             stashes_list_box,
             remotes_content_box,
             remote_list_boxes,
-            _branches_expander: branches_expander,
-            _tags_expander: tags_expander,
+            branches_expander,
+            tags_expander,
             stashes_expander,
-            _remotes_expander: remotes_expander,
+            remotes_expander,
             branches_label,
             tags_label,
             stashes_label,
             remotes_label,
             activate_handler,
             selected_ref,
-            _settings: settings,
+            settings,
         };
+
+        let panel_for_changed = panel.clone();
+        panel
+            .filter_entry
+            .connect_search_changed(move |_| panel_for_changed.apply_filter());
+
+        // Enter jumps to the first matching ref.
+        let panel_for_activate = panel.clone();
+        panel
+            .filter_entry
+            .connect_activate(move |_| panel_for_activate.activate_first_match());
+
+        // Closing the bar drops the filter so every ref is listed again.
+        let panel_for_close = panel.clone();
+        panel
+            .filter_bar
+            .connect_search_mode_enabled_notify(move |bar| {
+                if !bar.is_search_mode() {
+                    panel_for_close.filter_entry.set_text("");
+                    panel_for_close.apply_filter();
+                }
+            });
 
         // Default selection: prefer current ref, then checked-out branch, then "main", then first branch.
         if let Some(name) = current_ref_name {
@@ -357,6 +421,7 @@ impl BranchPanel {
             ],
             &self.selected_ref,
             &self.activate_handler,
+            &self.filter_query,
             remote_branches,
         );
         set_section_count_tooltips(
@@ -378,6 +443,116 @@ impl BranchPanel {
             let _ = self.select_ref(name);
         }
         self.ensure_default_selection();
+
+        // The rows were rebuilt, so section visibility must be recomputed.
+        self.apply_filter();
+    }
+
+    /// Reveal the filter bar and focus its entry.
+    pub fn show_filter(&self) {
+        self.filter_bar.set_search_mode(true);
+        self.filter_entry.grab_focus();
+    }
+
+    /// Hide the filter bar and list every ref again.
+    pub fn hide_filter(&self) {
+        self.filter_bar.set_search_mode(false);
+    }
+
+    /// Whether keyboard focus is in the filter entry.
+    pub fn filter_has_focus(&self) -> bool {
+        self.filter_entry
+            .state_flags()
+            .contains(gtk::StateFlags::FOCUS_WITHIN)
+    }
+
+    /// Apply the filter entry's text to every section.
+    ///
+    /// While a filter is active, sections with matches are expanded (so a
+    /// collapsed section can't hide them) and sections without are hidden.
+    fn apply_filter(&self) {
+        let query = self.filter_entry.text().trim().to_lowercase();
+        let filtering = !query.is_empty();
+        *self.filter_query.borrow_mut() = query.clone();
+
+        // Re-run the row filter, then report whether any row is still listed.
+        let refilter = |list_box: &gtk::ListBox| {
+            list_box.invalidate_filter();
+            list_box_rows(list_box).any(|row| row_matches_filter(&row, &query))
+        };
+
+        // The stashes section is the only one hidden when it has no rows at all.
+        let mut any_match = false;
+        for (expander, key, list_box, hide_when_empty) in [
+            (
+                &self.branches_expander,
+                "branches-expanded",
+                &self.branches_list_box,
+                false,
+            ),
+            (
+                &self.tags_expander,
+                "tags-expanded",
+                &self.tags_list_box,
+                false,
+            ),
+            (
+                &self.stashes_expander,
+                "stashes-expanded",
+                &self.stashes_list_box,
+                true,
+            ),
+        ] {
+            let matched = refilter(list_box);
+            any_match |= matched;
+            expander.set_visible(matched || !(filtering || hide_when_empty));
+            expander.set_expanded(filtering || self.settings.boolean(key));
+        }
+
+        let mut any_remote_match = false;
+        for list_box in self.remote_list_boxes.borrow().iter() {
+            let matched = refilter(list_box);
+            any_remote_match |= matched;
+            if let Some(expander) = list_box
+                .ancestor(gtk::Expander::static_type())
+                .and_downcast::<gtk::Expander>()
+            {
+                expander.set_visible(matched || !filtering);
+                if filtering {
+                    expander.set_expanded(true);
+                }
+            }
+        }
+        any_match |= any_remote_match;
+        self.remotes_expander
+            .set_visible(any_remote_match || !filtering);
+        self.remotes_expander
+            .set_expanded(filtering || self.settings.boolean("remotes-expanded"));
+
+        self.no_matches_label.set_visible(filtering && !any_match);
+    }
+
+    /// Switch to the first ref (in display order) matching the filter.
+    fn activate_first_match(&self) {
+        // The entry debounces `search-changed`, so apply the latest text first.
+        self.apply_filter();
+        let query = self.filter_query.borrow().clone();
+        if query.is_empty() {
+            return;
+        }
+
+        let first_match = [
+            &self.branches_list_box,
+            &self.tags_list_box,
+            &self.stashes_list_box,
+        ]
+        .into_iter()
+        .chain(self.remote_list_boxes.borrow().iter())
+        .find_map(|list_box| list_box_rows(list_box).find(|row| row_matches_filter(row, &query)));
+
+        if let Some(row) = first_match {
+            row.activate();
+        }
     }
 
     /// Select a ref by name.
@@ -534,6 +709,7 @@ fn populate_remotes_section(
     local_list_boxes: &[&gtk::ListBox],
     selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
     activate_handler: &Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
+    filter_query: &Rc<RefCell<String>>,
     remote_branches: &[BranchInfo],
 ) {
     let grouped = group_remote_branches(remote_branches);
@@ -564,6 +740,7 @@ fn populate_remotes_section(
         for branch_info in &branches {
             list_box.append(&create_remote_branch_row(branch_info));
         }
+        set_ref_filter_func(&list_box, filter_query);
 
         wire_remote_list_box(
             &list_box,
@@ -706,6 +883,47 @@ fn find_row_by_ref_name(
         i += 1;
     }
     None
+}
+
+/// The rows of `list_box`, in display order.
+fn list_box_rows(list_box: &gtk::ListBox) -> impl Iterator<Item = gtk::ListBoxRow> + '_ {
+    (0..).map_while(|i| list_box.row_at_index(i))
+}
+
+/// Hide the rows of `list_box` that don't match the shared filter text.
+fn set_ref_filter_func(list_box: &gtk::ListBox, filter_query: &Rc<RefCell<String>>) {
+    let filter_query = filter_query.clone();
+    list_box.set_filter_func(move |row| row_matches_filter(row, &filter_query.borrow()));
+}
+
+/// Whether `row` should be listed for the (already lowercased) filter `query`.
+fn row_matches_filter(row: &gtk::ListBoxRow, query: &str) -> bool {
+    query.is_empty() || row_filter_text(row).is_some_and(|text| filter_matches(&text, query))
+}
+
+/// The text a row is filtered on: its ref name, plus the message for a stash
+/// (which is what the row displays; the name is only `stash@{N}`).
+fn row_filter_text(row: &gtk::ListBoxRow) -> Option<String> {
+    let ref_info = row_ref_info(row)?;
+    if ref_info.ref_type != RefType::Stash {
+        return Some(ref_info.name);
+    }
+
+    let mut current = row.child()?.first_child();
+    while let Some(widget) = current {
+        if widget.widget_name() == "stash-message" {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                return Some(format!("{} {}", ref_info.name, label.text()));
+            }
+        }
+        current = widget.next_sibling();
+    }
+    Some(ref_info.name)
+}
+
+/// Case-insensitive substring match. `query` must already be lowercased.
+fn filter_matches(text: &str, query: &str) -> bool {
+    text.to_lowercase().contains(query)
 }
 
 /// Populate the stashes list box, hiding the section when there are none.
@@ -1027,6 +1245,7 @@ fn create_stash_row(stash_info: &StashInfo) -> gtk::ListBoxRow {
     row_box.append(&check_icon);
 
     let stash_label = gtk::Label::builder().halign(gtk::Align::Start).build();
+    stash_label.set_widget_name("stash-message");
     stash_label.set_text(&stash_info.message);
     stash_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     stash_label.set_tooltip_text(Some(&format!(
@@ -1220,6 +1439,22 @@ mod tests {
 
         let names: Vec<_> = sorted.iter().map(|branch| branch.name.as_str()).collect();
         assert_eq!(names, ["branch-1", "branch-2", "branch-10"]);
+    }
+
+    #[test]
+    fn filter_matches_ignores_case_of_the_ref_name() {
+        assert!(filter_matches("Feature/Login-Page", "login"));
+        assert!(filter_matches("v2026.6", "v2026"));
+        assert!(filter_matches(
+            "stash@{0} WIP on main: fix crash",
+            "on main"
+        ));
+    }
+
+    #[test]
+    fn filter_matches_rejects_refs_without_the_query() {
+        assert!(!filter_matches("feature/login", "logout"));
+        assert!(!filter_matches("main", "maintenance"));
     }
 
     #[test]

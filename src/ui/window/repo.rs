@@ -543,6 +543,7 @@ fn reset_repo_view(ui: &WindowUi) {
     ui.repo_view
         .branch_panel
         .update_refs(&[], &[], &[], &[], None, None);
+    ui.repo_view.branch_panel.hide_filter();
 
     ui.repo_view.search_bar.set_search_mode(false);
     ui.repo_view.search_entry.set_text("");

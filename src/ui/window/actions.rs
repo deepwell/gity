@@ -16,6 +16,7 @@ pub fn setup_shortcuts(app: &adw::Application) {
     app.set_accels_for_action("win.close-repo", &["<Ctrl><Shift>W", "<Alt>Left"]);
     app.set_accels_for_action("win.show-help-overlay", &["<Ctrl>question"]);
     app.set_accels_for_action("win.show-search", &["<Ctrl>F"]);
+    app.set_accels_for_action("win.show-ref-filter", &["<Ctrl><Shift>F"]);
     app.set_accels_for_action("win.hide-search", &["Escape"]);
     app.set_accels_for_action("win.find-next", &["<Ctrl>G"]);
     app.set_accels_for_action("win.find-previous", &["<Ctrl><Shift>G"]);
@@ -69,6 +70,17 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
     let action_hide_search = search_controller.action_hide_search(ui);
     let action_find_next = search_controller.action_find_next(ui, state);
     let action_find_previous = search_controller.action_find_previous(ui, state);
+
+    // Filter the branch panel's branches, tags and stashes by name
+    let branch_panel_for_filter = ui.repo_view.branch_panel.clone();
+    let state_for_filter = state.clone();
+    let action_show_ref_filter = ActionEntry::builder("show-ref-filter")
+        .activate(move |_, _, _| {
+            if state_for_filter.is_repo_loaded() {
+                branch_panel_for_filter.show_filter();
+            }
+        })
+        .build();
 
     // Refresh action - created as SimpleAction so we can enable/disable it based on repo state
     let action_refresh = gio::SimpleAction::new("refresh", None);
@@ -124,6 +136,7 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
         action_open,
         action_show_help,
         action_show_search,
+        action_show_ref_filter,
         action_hide_search,
         action_find_next,
         action_find_previous,
