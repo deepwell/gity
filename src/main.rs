@@ -32,23 +32,20 @@ fn main() -> glib::ExitCode {
 
     // Set GSETTINGS_SCHEMA_DIR for development builds if not already set
     // This must be done before any Settings objects are created
+    // Release builds always use the installed system schema; otherwise launching
+    // the installed binary from the source tree would pick up a stale dev schema.
     // Safe to use unsafe here because we're in main() before any threads are spawned
+    #[cfg(debug_assertions)]
     if std::env::var("GSETTINGS_SCHEMA_DIR").is_err() {
-        let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-        let schema_dir = std::path::Path::new("target")
-            .join(&profile)
+        // build.rs compiles schemas relative to the manifest dir, so anchor there
+        // instead of the current working directory
+        let schema_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("debug")
             .join("schemas");
         if schema_dir.exists() {
-            // Convert to absolute path
-            if let Ok(absolute_schema_dir) = std::env::current_dir()
-                .map(|cwd| cwd.join(&schema_dir).canonicalize().unwrap_or(schema_dir))
-            {
-                unsafe {
-                    std::env::set_var(
-                        "GSETTINGS_SCHEMA_DIR",
-                        absolute_schema_dir.to_string_lossy().as_ref(),
-                    );
-                }
+            unsafe {
+                std::env::set_var("GSETTINGS_SCHEMA_DIR", &schema_dir);
             }
         }
     }
