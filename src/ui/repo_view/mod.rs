@@ -3,7 +3,7 @@ use gtk::{
     prelude::*,
 };
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::ui::{BranchPanel, CommitList, CommitPagingState, DiffFileTree, copy_on_hover};
@@ -66,6 +66,13 @@ pub struct RepoView {
     pub horizontal_paned: gtk::Paned,
     /// Split between the changed-files column and the diff.
     pub diff_body_paned: gtk::Paned,
+    /// Paned child wrapping the changed-files column; visible only when the
+    /// window is wide enough and the column is enabled.
+    file_tree_column: gtk::Box,
+    /// Whether the app is currently at least `FILE_TREE_MIN_APP_WIDTH` wide.
+    file_tree_fits: Rc<Cell<bool>>,
+    /// Whether the user has the changed-files column turned on.
+    file_tree_enabled: Rc<Cell<bool>>,
 }
 
 impl RepoView {
@@ -113,6 +120,14 @@ impl RepoView {
         self.diff_header.set_visible(visible);
         self.commit_message_container.set_visible(visible);
         self.diff_file_tree.widget.set_visible(visible);
+    }
+
+    /// Turn the changed-files column on or off. Even when on, it is only shown
+    /// while the window is wide enough to fit it.
+    pub fn set_file_tree_enabled(&self, enabled: bool) {
+        self.file_tree_enabled.set(enabled);
+        self.file_tree_column
+            .set_visible(enabled && self.file_tree_fits.get());
     }
 
     /// Collapse the commit message back to its truncated height and reset scroll.
@@ -431,7 +446,7 @@ impl RepoView {
         diff_box.append(&commit_message_container);
 
         // Changed-files column to the left of the diff. Hidden by default and
-        // only shown by the width breakpoint below.
+        // only shown by the width breakpoint below, if the user has it enabled.
         let diff_file_tree = DiffFileTree::new();
         diff_file_tree.widget.set_visible(false);
         let file_tree_column = gtk::Box::builder()
@@ -547,7 +562,25 @@ impl RepoView {
             FILE_TREE_MIN_APP_WIDTH,
             adw::LengthUnit::Px,
         ));
-        wide_breakpoint.add_setter(&file_tree_column, "visible", Some(&true.to_value()));
+        let file_tree_fits = Rc::new(Cell::new(false));
+        let file_tree_enabled = Rc::new(Cell::new(true));
+        {
+            let column = file_tree_column.clone();
+            let fits = file_tree_fits.clone();
+            let enabled = file_tree_enabled.clone();
+            wide_breakpoint.connect_apply(move |_| {
+                fits.set(true);
+                column.set_visible(enabled.get());
+            });
+        }
+        {
+            let column = file_tree_column.clone();
+            let fits = file_tree_fits.clone();
+            wide_breakpoint.connect_unapply(move |_| {
+                fits.set(false);
+                column.set_visible(false);
+            });
+        }
         adw::prelude::BreakpointBinExt::add_breakpoint(&widget, wide_breakpoint);
 
         Self {
@@ -581,6 +614,9 @@ impl RepoView {
             main_content_paned,
             horizontal_paned,
             diff_body_paned,
+            file_tree_column,
+            file_tree_fits,
+            file_tree_enabled,
         }
     }
 }

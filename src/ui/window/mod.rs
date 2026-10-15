@@ -190,6 +190,16 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
         }
     });
 
+    // Show/hide the changed-files column from the header menu. The action is
+    // backed by GSettings, so the choice persists and stays in sync across windows.
+    window.add_action(&settings.create_action("show-diff-file-tree"));
+    ui.repo_view
+        .set_file_tree_enabled(settings.boolean("show-diff-file-tree"));
+    let repo_view_for_file_tree = ui.repo_view.clone();
+    settings.connect_changed(Some("show-diff-file-tree"), move |settings, key| {
+        repo_view_for_file_tree.set_file_tree_enabled(settings.boolean(key));
+    });
+
     // Main/welcome views are added by ui::WindowUi::build().
 
     // Save window state to GSettings when window is resized

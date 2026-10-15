@@ -78,6 +78,12 @@ impl WindowUi {
         menu_section.append(Some("Reload Repository"), Some("win.refresh"));
         menu_section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
         menu_section.append(Some(&format!("About {}", app_name)), Some("win.about"));
+        let view_section = gio::Menu::new();
+        view_section.append(
+            Some("Show Lines Updated Per File"),
+            Some("win.show-diff-file-tree"),
+        );
+        menu.append_section(None, &view_section);
         menu.append_section(None, &menu_section);
         menu_button.set_menu_model(Some(&menu));
         header_bar.pack_end(&menu_button);
