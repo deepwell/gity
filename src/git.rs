@@ -1,7 +1,7 @@
 use chrono::prelude::*;
 use git2::{
-    Commit, Delta, Diff, DiffDelta, DiffFindOptions, DiffFormat, DiffLineType, DiffOptions, Error,
-    ObjectType, Pathspec, Repository, Signature, Time,
+    Commit, Delta, Diff, DiffDelta, DiffFile, DiffFindOptions, DiffFormat, DiffLineType,
+    DiffOptions, Error, FileMode, ObjectType, Oid, Pathspec, Repository, Signature, Time,
 };
 use std::fmt;
 use std::path::Path;
@@ -34,6 +34,18 @@ pub struct FileChange {
     pub kind: FileChangeKind,
     pub old_path: Option<String>,
     pub new_path: Option<String>,
+    /// Blob id of the old side, or `None` when that side is absent or not a
+    /// regular file (e.g. a submodule or symlink).
+    pub old_oid: Option<Oid>,
+    /// Blob id of the new side; `None` under the same conditions as `old_oid`.
+    pub new_oid: Option<Oid>,
+    /// Mode of the old side (`Unreadable` when that side is absent).
+    pub old_mode: FileMode,
+    /// Mode of the new side (`Unreadable` when that side is absent).
+    pub new_mode: FileMode,
+    /// libgit2 treated the content as binary, so `patch` holds only a
+    /// "Binary files … differ" line.
+    pub binary: bool,
     /// Content / hunk lines only (no `diff --git` / rename headers).
     pub patch: String,
 }
@@ -82,11 +94,23 @@ fn diff_path(path: Option<&Path>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Blob id of a regular file on one side of a delta.
+fn blob_oid(file: &DiffFile<'_>) -> Option<Oid> {
+    matches!(file.mode(), FileMode::Blob | FileMode::BlobExecutable)
+        .then(|| file.id())
+        .filter(|id| !id.is_zero())
+}
+
 fn file_change_from_delta(delta: &DiffDelta<'_>) -> FileChange {
     FileChange {
         kind: file_change_kind(delta.status()),
         old_path: diff_path(delta.old_file().path()),
         new_path: diff_path(delta.new_file().path()),
+        old_oid: blob_oid(&delta.old_file()),
+        new_oid: blob_oid(&delta.new_file()),
+        old_mode: delta.old_file().mode(),
+        new_mode: delta.new_file().mode(),
+        binary: false,
         patch: String::new(),
     }
 }
@@ -160,6 +184,12 @@ fn collect_file_changes(diff: &mut Diff<'_>) -> Result<Vec<FileChange>, Error> {
         append_patch_line(&mut files[file_idx].patch, &line);
         true
     })?;
+
+    // libgit2 only detects binary content while generating the patch, flagging
+    // the diff's own deltas, so read it back once printing is done.
+    for (file, delta) in files.iter_mut().zip(diff.deltas()) {
+        file.binary = delta.flags().is_binary();
+    }
 
     Ok(files)
 }
@@ -779,6 +809,17 @@ pub fn get_range_diff(path: &str, oldest_sha: &str, newest_sha: &str) -> Result<
     commit_diff_from_trees(&repo, base_tree.as_ref(), &newest_tree, None)
 }
 
+/// Reads a blob's raw contents. Returns `Ok(None)` when the object is not a
+/// blob or is larger than `max_bytes`, without loading it.
+pub fn read_blob(path: &Path, oid: Oid, max_bytes: usize) -> Result<Option<Vec<u8>>, Error> {
+    let repo = Repository::open(path)?;
+    let (size, kind) = repo.odb()?.read_header(oid)?;
+    if kind != ObjectType::Blob || size > max_bytes {
+        return Ok(None);
+    }
+    Ok(Some(repo.find_blob(oid)?.content().to_vec()))
+}
+
 pub fn validate_repository(path: &Path) -> Result<(), git2::Error> {
     Repository::open(path).map(|_| ())
 }
@@ -929,6 +970,11 @@ mod tests {
             kind: FileChangeKind::Modified,
             old_path: Some("a.txt".to_string()),
             new_path: Some("a.txt".to_string()),
+            old_oid: None,
+            new_oid: None,
+            old_mode: FileMode::Blob,
+            new_mode: FileMode::Blob,
+            binary: false,
             patch: patch.to_string(),
         }
     }
@@ -1314,5 +1360,104 @@ mod tests {
             .collect();
         assert_eq!(paths, vec!["a.txt", "new.txt"]);
         assert_eq!(diff.files[1].kind, FileChangeKind::Added);
+    }
+
+    /// PNG signature plus the start of an IHDR chunk; the NUL bytes are enough
+    /// for libgit2 to treat it as binary.
+    fn png_bytes(width: u8) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0".to_vec();
+        bytes.extend_from_slice(&[width, 0, 0, 0, 1]);
+        bytes
+    }
+
+    fn single_file_diff(tr: &TestRepo, commit: Oid) -> FileChange {
+        let diff = get_commit_diff(tr.path().to_str().unwrap(), &commit.to_string()).unwrap();
+        assert_eq!(diff.files.len(), 1, "unexpected files: {:?}", diff.files);
+        diff.files.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn get_commit_diff_records_added_binary_image() {
+        let mut tr = TestRepo::new();
+        let commit = tr.commit_file("main", "logo.png", png_bytes(1), "add logo");
+
+        let file = single_file_diff(&tr, commit);
+        assert_eq!(file.kind, FileChangeKind::Added);
+        assert!(file.binary);
+        assert_eq!(file.old_oid, None);
+        let blob = tr.repo().find_blob(file.new_oid.unwrap()).unwrap();
+        assert_eq!(blob.content(), png_bytes(1).as_slice());
+    }
+
+    #[test]
+    fn get_commit_diff_records_both_sides_of_modified_image() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "logo.png", png_bytes(1), "add logo");
+        let commit = tr.commit_file("main", "logo.png", png_bytes(2), "resize logo");
+
+        let file = single_file_diff(&tr, commit);
+        assert_eq!(file.kind, FileChangeKind::Modified);
+        assert!(file.binary);
+        let (old, new) = (file.old_oid.unwrap(), file.new_oid.unwrap());
+        assert_ne!(old, new);
+        assert_eq!(tr.repo().find_blob(old).unwrap().content(), png_bytes(1));
+        assert_eq!(tr.repo().find_blob(new).unwrap().content(), png_bytes(2));
+    }
+
+    #[test]
+    fn get_commit_diff_pure_rename_keeps_same_blob() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "logo.png", png_bytes(1), "add logo");
+        let commit = tr.rename_file("main", "logo.png", "brand.png", "rename logo");
+
+        let file = single_file_diff(&tr, commit);
+        assert_eq!(file.kind, FileChangeKind::Renamed);
+        assert!(file.old_oid.is_some());
+        assert_eq!(file.old_oid, file.new_oid);
+    }
+
+    #[test]
+    fn get_commit_diff_treats_svg_as_text() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "icon.svg", "<svg width=\"1\"/>\n", "add icon");
+        let commit = tr.commit_file("main", "icon.svg", "<svg width=\"2\"/>\n", "widen icon");
+
+        let file = single_file_diff(&tr, commit);
+        assert!(!file.binary);
+        assert!(file.old_oid.is_some() && file.new_oid.is_some());
+        assert!(file.patch.contains("+<svg width=\"2\"/>"), "{}", file.patch);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_commit_diff_mode_change_keeps_same_blob() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "logo.png", png_bytes(1), "add logo");
+        let full = tr.path().join("logo.png");
+        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let commit = tr.commit_file("main", "logo.png", png_bytes(1), "make logo executable");
+
+        let file = single_file_diff(&tr, commit);
+        assert_eq!(file.kind, FileChangeKind::Modified);
+        assert!(file.old_oid.is_some());
+        assert_eq!(file.old_oid, file.new_oid);
+        assert_eq!(file.old_mode, FileMode::Blob);
+        assert_eq!(file.new_mode, FileMode::BlobExecutable);
+        // libgit2 still reports the unchanged content as differing binaries.
+        assert!(file.binary);
+        assert!(file.patch.starts_with("Binary files"), "{}", file.patch);
+    }
+
+    #[test]
+    fn read_blob_returns_contents_within_limit() {
+        let mut tr = TestRepo::new();
+        let commit = tr.commit_file("main", "logo.png", png_bytes(1), "add logo");
+        let oid = single_file_diff(&tr, commit).new_oid.unwrap();
+        let size = png_bytes(1).len();
+
+        assert_eq!(read_blob(tr.path(), oid, size).unwrap(), Some(png_bytes(1)));
+        assert_eq!(read_blob(tr.path(), oid, size - 1).unwrap(), None);
     }
 }

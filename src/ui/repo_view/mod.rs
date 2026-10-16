@@ -257,8 +257,11 @@ impl RepoView {
         // diff area), the auto-created Viewport would scroll to bring the focused
         // SourceView into view, yanking the click position off-screen and making it
         // hard to click/select text in long diffs.
+        // Natural vscroll policy: image previews can shrink to a minimum height of
+        // 0, so the default (minimum) policy would collapse them in long diffs.
         let diff_viewport = gtk::Viewport::builder()
             .scroll_to_focus(false)
+            .vscroll_policy(gtk::ScrollablePolicy::Natural)
             .child(&diff_files_box)
             .build();
         diff_scrolled_window.set_child(Some(&diff_viewport));

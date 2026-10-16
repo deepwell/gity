@@ -66,7 +66,7 @@ impl TestRepo {
         self.commit_detailed(
             branch,
             &format!("file_{seq}.txt"),
-            &format!("contents {seq}\n"),
+            format!("contents {seq}\n"),
             message,
             "Tester",
             "tester@example.com",
@@ -87,7 +87,7 @@ impl TestRepo {
         self.commit_detailed(
             branch,
             &format!("file_{seq}.txt"),
-            &format!("contents {seq}\n"),
+            format!("contents {seq}\n"),
             message,
             author_name,
             author_email,
@@ -97,7 +97,13 @@ impl TestRepo {
     }
 
     /// Append a line to a specific file path and commit it on `branch`.
-    pub fn commit_file(&mut self, branch: &str, file: &str, contents: &str, message: &str) -> Oid {
+    pub fn commit_file(
+        &mut self,
+        branch: &str,
+        file: &str,
+        contents: impl AsRef<[u8]>,
+        message: &str,
+    ) -> Oid {
         self.commit_detailed(
             branch,
             file,
@@ -110,12 +116,51 @@ impl TestRepo {
         )
     }
 
+    /// Move `from` to `to` unchanged and commit it on `branch`.
+    pub fn rename_file(&mut self, branch: &str, from: &str, to: &str, message: &str) -> Oid {
+        let when = self.next_time();
+        let ref_name = format!("refs/heads/{branch}");
+        let parent_commit = self
+            .repo
+            .find_reference(&ref_name)
+            .expect("find branch")
+            .peel_to_commit()
+            .expect("branch tip");
+
+        let tree_oid = {
+            let mut index = self.repo.index().expect("open index");
+            index
+                .read_tree(&parent_commit.tree().unwrap())
+                .expect("seed index");
+            let workdir = self.repo.workdir().expect("workdir");
+            std::fs::rename(workdir.join(from), workdir.join(to)).expect("rename file");
+            index.remove_path(Path::new(from)).expect("remove path");
+            index.add_path(Path::new(to)).expect("add path");
+            let oid = index.write_tree().expect("write tree");
+            index.write().expect("persist index");
+            oid
+        };
+
+        let tree = self.repo.find_tree(tree_oid).expect("find tree");
+        let sig = Signature::new("Tester", "tester@example.com", &when).expect("sig");
+        self.repo
+            .commit(
+                Some(&ref_name),
+                &sig,
+                &sig,
+                message,
+                &tree,
+                &[&parent_commit],
+            )
+            .expect("create commit")
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn commit_detailed(
         &mut self,
         branch: &str,
         file: &str,
-        contents: &str,
+        contents: impl AsRef<[u8]>,
         message: &str,
         author_name: &str,
         author_email: &str,

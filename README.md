@@ -13,7 +13,7 @@ View branches, commit diffs, and search through commit messages, authors, and Gi
 
 ## Development Setup
 ```bash
-sudo dnf install -y gcc rust rustfmt rust-analyzer cargo gtk4-devel openssl-devel libadwaita-devel meson ninja-build gtksourceview5-devel
+sudo dnf install -y gcc rust rustfmt rust-analyzer cargo gtk4-devel openssl-devel libadwaita-devel meson ninja-build gtksourceview5-devel libseccomp-devel fontconfig-devel glycin-loaders bubblewrap
 ```
 
 ### Code Linting

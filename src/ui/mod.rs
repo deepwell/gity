@@ -8,6 +8,7 @@ pub mod commit_list;
 pub mod copy_on_hover;
 pub mod diff_file_tree;
 pub mod grid_cell;
+pub mod image_diff;
 pub mod placeholder;
 pub mod repo_view;
 pub mod styles;

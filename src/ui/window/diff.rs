@@ -1,9 +1,11 @@
 use gtk::{glib, prelude::*};
 use sourceview5 as sv;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use sv::prelude::*;
 
 use crate::git;
+use crate::ui::image_diff::{self, ImageDiffSource};
 use crate::ui::{DiffFileTree, FileSummary, copy_on_hover};
 
 use super::state::AppState;
@@ -77,53 +79,35 @@ fn update_diff_tag_colors(buffer: &gtk::TextBuffer) {
     }
 }
 
-/// CSS for the changed-files "+N" / "−N" chips, using the same colors as the diff lines.
-fn diff_stat_css(colors: &DiffColors) -> String {
+/// CSS for widgets that share the diff line colors: the changed-files "+N" /
+/// "−N" chips and the outlines around before/after image previews.
+fn diff_colors_css(colors: &DiffColors) -> String {
     format!(
         ".diff-stat-add {{ background-color: {}; }}\n\
-         .diff-stat-remove {{ background-color: {}; }}\n",
-        colors.add_bg, colors.remove_bg
+         .diff-stat-remove {{ background-color: {}; }}\n\
+         .image-diff-after {{ outline: 1px solid {}; }}\n\
+         .image-diff-before {{ outline: 1px solid {}; }}\n",
+        colors.add_bg, colors.remove_bg, colors.gutter_add_bg, colors.gutter_remove_bg
     )
 }
 
 /// Refresh diff colors for all visible diff sections when theme changes.
+/// Collapsed sections have no child widget, so only expanded ones are touched.
 fn refresh_diff_colors(diff_files_box: &gtk::Box) {
-    let mut child = diff_files_box.first_child();
-    while let Some(widget) = child {
-        let next = widget.next_sibling();
+    refresh_text_view_colors(diff_files_box.upcast_ref());
+}
 
-        // Each file section is an Expander
-        if let Ok(expander) = widget.clone().downcast::<gtk::Expander>() {
-            // Only process expanded sections (collapsed ones have no child widget)
-            if let Some(row) = expander.child() {
-                if let Ok(row_box) = row.downcast::<gtk::Box>() {
-                    // The row contains: gutter (TextView) + h_scroller (ScrolledWindow)
-                    let mut row_child = row_box.first_child();
-                    while let Some(rc) = row_child {
-                        let rc_next = rc.next_sibling();
-
-                        // Update gutter colors (first child is the gutter TextView)
-                        if let Ok(gutter_view) = rc.clone().downcast::<gtk::TextView>() {
-                            let buffer = gutter_view.buffer();
-                            update_diff_tag_colors(&buffer);
-                        }
-
-                        // Update code view colors (ScrolledWindow contains the SourceView)
-                        if let Ok(scroller) = rc.clone().downcast::<gtk::ScrolledWindow>() {
-                            if let Some(view_widget) = scroller.child() {
-                                if let Ok(source_view) = view_widget.downcast::<sv::View>() {
-                                    let buffer = source_view.buffer();
-                                    update_diff_tag_colors(buffer.upcast_ref::<gtk::TextBuffer>());
-                                }
-                            }
-                        }
-                        row_child = rc_next;
-                    }
-                }
-            }
-        }
-
-        child = next;
+/// Updates the diff tag colors of every TextView under `widget`: each file
+/// row's gutter and its SourceView (a TextView subclass), however nested.
+fn refresh_text_view_colors(widget: &gtk::Widget) {
+    if let Some(text_view) = widget.downcast_ref::<gtk::TextView>() {
+        update_diff_tag_colors(&text_view.buffer());
+        return;
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        refresh_text_view_colors(&c);
+        child = c.next_sibling();
     }
 }
 
@@ -145,13 +129,14 @@ enum DiffLineKind {
     Other,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreparedDiffSection {
     label: String,
     gutter_text: String,
     right_text: String,
     kinds: Vec<DiffLineKind>,
     gutter_chars: usize,
+    image: Option<ImageDiffSource>,
 }
 
 fn clear_container(container: &gtk::Box) {
@@ -325,6 +310,7 @@ fn set_all_file_expanders(diff_files_box: &gtk::Box, expanded: bool) {
 struct DiffSection {
     label: String,
     text: String,
+    image: Option<ImageDiffSource>,
 }
 
 fn file_change_label(file: &git::FileChange) -> String {
@@ -347,21 +333,59 @@ fn file_change_label(file: &git::FileChange) -> String {
     }
 }
 
+/// A modification that left the content untouched, so only the file mode
+/// (e.g. the executable bit) changed.
+fn is_mode_only_change(file: &git::FileChange) -> bool {
+    file.kind == git::FileChangeKind::Modified
+        && file.old_oid.is_some()
+        && file.old_oid == file.new_oid
+        && file.old_mode != file.new_mode
+}
+
+/// Blob ids to preview when `file` is an image whose content can be shown.
+fn image_source(file: &git::FileChange) -> Option<ImageDiffSource> {
+    use git::FileChangeKind::*;
+    // A mode-only change has nothing visual to compare; it is described as text.
+    let previewable = matches!(file.kind, Added | Deleted | Modified | Renamed | Copied)
+        && !is_mode_only_change(file);
+    let is_image = [&file.old_path, &file.new_path]
+        .into_iter()
+        .flatten()
+        .any(|path| image_diff::is_image_path(path));
+    let has_blob = file.old_oid.is_some() || file.new_oid.is_some();
+    (previewable && is_image && has_blob).then_some(ImageDiffSource {
+        old: file.old_oid,
+        new: file.new_oid,
+    })
+}
+
 fn sections_from_commit_diff(diff: &git::CommitDiff) -> Vec<DiffSection> {
     diff.files
         .iter()
         .map(|file| {
             let label = file_change_label(file);
-            let text = if file.patch.trim().is_empty() {
+            let image = image_source(file);
+            let text = if is_mode_only_change(file) {
+                // Checked before the patch: for binary files libgit2 still
+                // emits "Binary files … differ" when only the mode changed.
+                format!(
+                    "File mode changed from {:o} to {:o} with no content changes\n",
+                    u32::from(file.old_mode),
+                    u32::from(file.new_mode)
+                )
+            } else if file.patch.trim().is_empty() {
                 match file.kind {
                     git::FileChangeKind::Renamed => "Renamed with no content changes\n".to_string(),
                     git::FileChangeKind::Copied => "Copied with no content changes\n".to_string(),
                     _ => String::new(),
                 }
+            } else if image.is_some() && file.binary {
+                // The preview replaces the "Binary files … differ" line.
+                String::new()
             } else {
                 file.patch.clone()
             };
-            DiffSection { label, text }
+            DiffSection { label, text, image }
         })
         .collect()
 }
@@ -821,10 +845,34 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     row
 }
 
+/// Builds the content of a file section: its text diff, its image preview, or
+/// the preview above the text diff for images stored as text (e.g. SVG).
+fn build_section_child(
+    prepared: &PreparedDiffSection,
+    global_gutter_chars: usize,
+    repo_path: &Path,
+) -> gtk::Widget {
+    let Some(image) = &prepared.image else {
+        return build_file_row(prepared, global_gutter_chars).upcast();
+    };
+    let has_text = !prepared.kinds.is_empty();
+    let comparison = image_diff::build(image, repo_path, &prepared.label, has_text);
+    if !has_text {
+        return comparison.upcast();
+    }
+    let column = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
+    column.append(&comparison);
+    column.append(&build_file_row(prepared, global_gutter_chars));
+    column.upcast()
+}
+
 fn build_file_expander_lazy(
     prepared: &PreparedDiffSection,
     expanded: bool,
     global_gutter_chars: usize,
+    repo_path: &Path,
 ) -> gtk::Expander {
     let expander = gtk::Expander::builder().expanded(expanded).build();
 
@@ -842,24 +890,19 @@ fn build_file_expander_lazy(
 
     // If expanded initially, build the heavy child once now.
     if expanded {
-        let row = build_file_row(prepared, global_gutter_chars);
+        let row = build_section_child(prepared, global_gutter_chars, repo_path);
         expander.set_child(Some(&row));
     }
 
     // Lazy-build / drop the heavy child as the user opens/closes the file section.
     // This keeps the widget tree lightweight during paned/window resizing.
-    let prepared_for_cb = PreparedDiffSection {
-        label: prepared.label.clone(),
-        gutter_text: prepared.gutter_text.clone(),
-        right_text: prepared.right_text.clone(),
-        kinds: prepared.kinds.clone(),
-        gutter_chars: prepared.gutter_chars,
-    };
+    let prepared_for_cb = prepared.clone();
+    let repo_path = repo_path.to_path_buf();
 
     expander.connect_expanded_notify(move |exp| {
         if exp.is_expanded() {
             if exp.child().is_none() {
-                let row = build_file_row(&prepared_for_cb, global_gutter_chars);
+                let row = build_section_child(&prepared_for_cb, global_gutter_chars, &repo_path);
                 exp.set_child(Some(&row));
             }
         } else {
@@ -874,6 +917,7 @@ fn build_file_expander_lazy(
 // Helper function to poll channel and update diff UI
 fn poll_diff_result(
     rx: mpsc::Receiver<Result<git::CommitDiff, git2::Error>>,
+    repo_path: PathBuf,
     diff_files_box: gtk::Box,
     diff_file_tree: DiffFileTree,
     expand_button: gtk::Button,
@@ -923,6 +967,7 @@ fn poll_diff_result(
                     right_text,
                     kinds,
                     gutter_chars,
+                    image: section.image,
                 });
             }
 
@@ -936,7 +981,8 @@ fn poll_diff_result(
             for (idx, prepared) in prepared_sections.iter().enumerate() {
                 // Expand only the first file by default to keep huge diffs responsive.
                 let expanded = idx < DEFAULT_EXPANDED_FILES;
-                let expander = build_file_expander_lazy(prepared, expanded, global_gutter_chars);
+                let expander =
+                    build_file_expander_lazy(prepared, expanded, global_gutter_chars, &repo_path);
                 let diff_files_box_for_notify = diff_files_box.clone();
                 let expand_for_notify = expand_button.clone();
                 let collapse_for_notify = collapse_button.clone();
@@ -970,6 +1016,7 @@ fn poll_diff_result(
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 poll_diff_result(
                     rx,
+                    repo_path,
                     diff_files_box_clone,
                     diff_file_tree_clone,
                     expand_btn_clone,
@@ -1165,6 +1212,7 @@ fn load_range_diff(
     });
     poll_diff_result(
         rx,
+        path.clone(),
         diff_files_box_clone,
         ui.repo_view.diff_file_tree.clone(),
         expand_btn,
@@ -1234,6 +1282,7 @@ fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
     });
     poll_diff_result(
         rx,
+        path.clone(),
         diff_files_box_clone,
         ui.repo_view.diff_file_tree.clone(),
         expand_btn,
@@ -1310,14 +1359,14 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
         });
     }
 
-    // Changed-files chips share the diff colors; installed app-wide so they
-    // can be reloaded on theme changes like the diff text tags.
-    let diff_stat_provider = gtk::CssProvider::new();
-    diff_stat_provider.load_from_string(&diff_stat_css(get_diff_colors()));
+    // Changed-files chips and image outlines share the diff colors; installed
+    // app-wide so they can be reloaded on theme changes like the diff text tags.
+    let diff_colors_provider = gtk::CssProvider::new();
+    diff_colors_provider.load_from_string(&diff_colors_css(get_diff_colors()));
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
-            &diff_stat_provider,
+            &diff_colors_provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
@@ -1326,7 +1375,7 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
     let diff_files_box_for_theme = ui.repo_view.diff_files_box.clone();
     adw::StyleManager::default().connect_dark_notify(move |_| {
         refresh_diff_colors(&diff_files_box_for_theme);
-        diff_stat_provider.load_from_string(&diff_stat_css(get_diff_colors()));
+        diff_colors_provider.load_from_string(&diff_colors_css(get_diff_colors()));
     });
 
     let ui_for_selection = ui.clone();
@@ -1368,7 +1417,10 @@ pub fn connect(ui: &WindowUi, state: &AppState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{author_initials, format_author, split_commit_message};
+    use super::{author_initials, format_author, sections_from_commit_diff, split_commit_message};
+    use crate::git::{CommitDiff, FileChange, FileChangeKind};
+    use crate::ui::image_diff::ImageDiffSource;
+    use git2::{FileMode, Oid};
 
     #[test]
     fn split_commit_message_separates_subject_and_body() {
@@ -1420,5 +1472,144 @@ mod tests {
     fn author_initials_handles_empty_name() {
         assert_eq!(author_initials(""), "");
         assert_eq!(author_initials("   "), "");
+    }
+
+    fn oid(n: u8) -> Oid {
+        Oid::from_bytes(&[n; 20]).unwrap()
+    }
+
+    fn change(
+        kind: FileChangeKind,
+        path: &str,
+        old_oid: Option<Oid>,
+        new_oid: Option<Oid>,
+        binary: bool,
+        patch: &str,
+    ) -> FileChange {
+        FileChange {
+            kind,
+            old_path: Some(path.to_string()),
+            new_path: Some(path.to_string()),
+            old_oid,
+            new_oid,
+            old_mode: FileMode::Blob,
+            new_mode: FileMode::Blob,
+            binary,
+            patch: patch.to_string(),
+        }
+    }
+
+    fn sections(files: Vec<FileChange>) -> Vec<(String, Option<ImageDiffSource>)> {
+        let diff = CommitDiff {
+            preamble: None,
+            files,
+        };
+        sections_from_commit_diff(&diff)
+            .into_iter()
+            .map(|section| (section.text, section.image))
+            .collect()
+    }
+
+    const BINARY_PATCH: &str = "Binary files a/x differ\n";
+
+    #[test]
+    fn binary_image_is_previewed_without_text() {
+        let file = change(
+            FileChangeKind::Modified,
+            "logo.png",
+            Some(oid(1)),
+            Some(oid(2)),
+            true,
+            BINARY_PATCH,
+        );
+        let expected = ImageDiffSource {
+            old: Some(oid(1)),
+            new: Some(oid(2)),
+        };
+        assert_eq!(sections(vec![file]), vec![(String::new(), Some(expected))]);
+    }
+
+    #[test]
+    fn text_image_is_previewed_above_its_text_diff() {
+        let patch = "@@ -1 +1 @@\n-<svg/>\n+<svg width=\"2\"/>\n";
+        let file = change(
+            FileChangeKind::Modified,
+            "icon.svg",
+            Some(oid(1)),
+            Some(oid(2)),
+            false,
+            patch,
+        );
+        let [(text, image)] = sections(vec![file]).try_into().unwrap();
+        assert_eq!(text, patch);
+        assert!(image.is_some());
+    }
+
+    #[test]
+    fn non_image_binary_keeps_binary_notice() {
+        let file = change(
+            FileChangeKind::Modified,
+            "archive.zip",
+            Some(oid(1)),
+            Some(oid(2)),
+            true,
+            BINARY_PATCH,
+        );
+        assert_eq!(sections(vec![file]), vec![(BINARY_PATCH.to_string(), None)]);
+    }
+
+    #[test]
+    fn deleted_image_previews_old_side_only() {
+        let file = change(
+            FileChangeKind::Deleted,
+            "logo.png",
+            Some(oid(1)),
+            None,
+            true,
+            BINARY_PATCH,
+        );
+        let [(_, image)] = sections(vec![file]).try_into().unwrap();
+        assert_eq!(
+            image,
+            Some(ImageDiffSource {
+                old: Some(oid(1)),
+                new: None,
+            })
+        );
+    }
+
+    #[test]
+    fn mode_only_image_change_is_described_instead_of_previewed() {
+        let mut file = change(
+            FileChangeKind::Modified,
+            "logo.png",
+            Some(oid(1)),
+            Some(oid(1)),
+            true,
+            BINARY_PATCH,
+        );
+        file.new_mode = FileMode::BlobExecutable;
+        assert_eq!(
+            sections(vec![file]),
+            vec![(
+                "File mode changed from 100644 to 100755 with no content changes\n".to_string(),
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn image_without_blob_is_not_previewed() {
+        // e.g. a submodule or symlink named like an image.
+        let file = change(
+            FileChangeKind::Typechange,
+            "logo.png",
+            None,
+            None,
+            false,
+            "",
+        );
+        let [(_, image)] = sections(vec![file]).try_into().unwrap();
+        assert_eq!(image, None);
     }
 }

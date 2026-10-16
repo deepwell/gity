@@ -14,7 +14,7 @@ jobs:
     steps:
     - uses: actions/checkout@v7
     - name: Install dependencies
-      run: sudo apt-get install -y pkg-config libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libssl-dev libglib2.0-dev-bin
+      run: sudo apt-get install -y pkg-config libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libssl-dev libglib2.0-dev-bin libseccomp-dev libfontconfig-dev
     - name: Build
       run: cargo build --verbose
     - name: Run tests
