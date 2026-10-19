@@ -961,6 +961,133 @@ pub fn get_tags(path: &Path) -> Result<std::collections::HashMap<String, Vec<Str
     Ok(tag_map)
 }
 
+/// Kind of ref the user can create from the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewRefKind {
+    Branch,
+    Tag,
+}
+
+impl NewRefKind {
+    fn ref_prefix(self) -> &'static str {
+        match self {
+            NewRefKind::Branch => "refs/heads/",
+            NewRefKind::Tag => "refs/tags/",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NewRefKind::Branch => "branch",
+            NewRefKind::Tag => "tag",
+        }
+    }
+}
+
+/// Check that `name` can be used for a new branch or tag. The error is a
+/// user-facing message suitable for showing in the create dialog.
+pub fn validate_new_ref_name(path: &Path, kind: NewRefKind, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Name is required".to_string());
+    }
+    let full_name = format!("{}{name}", kind.ref_prefix());
+    if !git2::Reference::is_valid_name(&full_name) {
+        return Err(format!("“{name}” is not a valid {} name", kind.label()));
+    }
+    // Match the exact ref; `branch_exists` uses revparse and would also match SHAs.
+    let exists = Repository::open(path)
+        .map(|repo| repo.find_reference(&full_name).is_ok())
+        .unwrap_or(false);
+    if exists {
+        return Err(format!("A {} named “{name}” already exists", kind.label()));
+    }
+    Ok(())
+}
+
+/// Create local branch `name` pointing at the commit `target_sha`.
+pub fn create_branch(path: &Path, name: &str, target_sha: &str) -> Result<(), Error> {
+    let repo = Repository::open(path)?;
+    let commit = repo.find_commit(Oid::from_str(target_sha)?)?;
+    repo.branch(name, &commit, false)?;
+    Ok(())
+}
+
+/// Create tag `name` pointing at `target_sha`. With a message the tag is
+/// annotated (tagger taken from the git config); otherwise it is lightweight.
+pub fn create_tag(
+    path: &Path,
+    name: &str,
+    target_sha: &str,
+    message: Option<&str>,
+) -> Result<(), Error> {
+    let repo = Repository::open(path)?;
+    let target = repo.find_object(Oid::from_str(target_sha)?, None)?;
+    match message {
+        Some(message) => {
+            let tagger = repo.signature()?;
+            repo.tag(name, &target, &tagger, message, false)?;
+        }
+        None => {
+            repo.tag_lightweight(name, &target, false)?;
+        }
+    }
+    Ok(())
+}
+
+/// Delete local branch `name`. Fails for the checked-out branch.
+pub fn delete_branch(path: &Path, name: &str) -> Result<(), Error> {
+    let repo = Repository::open(path)?;
+    repo.find_branch(name, git2::BranchType::Local)?.delete()
+}
+
+/// Delete tag `name` (lightweight or annotated).
+pub fn delete_tag(path: &Path, name: &str) -> Result<(), Error> {
+    let repo = Repository::open(path)?;
+    repo.tag_delete(name)
+}
+
+/// Drop the stash entry whose commit is `sha`. Stash indices shift as entries
+/// are pushed and dropped, so the entry is found by SHA rather than `stash@{N}`.
+pub fn delete_stash(path: &Path, sha: &str) -> Result<(), Error> {
+    let mut repo = Repository::open(path)?;
+    let oid = Oid::from_str(sha)?;
+    let mut found = None;
+    repo.stash_foreach(|index, _, stash_oid| {
+        if *stash_oid == oid {
+            found = Some(index);
+            return false;
+        }
+        true
+    })?;
+    match found {
+        Some(index) => repo.stash_drop(index),
+        None => Err(Error::from_str("The stash no longer exists")),
+    }
+}
+
+/// Whether local branch `name` is fully merged into HEAD, i.e. deleting it
+/// would not lose any commits. Returns `false` when it cannot be determined,
+/// so callers err on the side of warning.
+pub fn is_branch_merged_into_head(path: &Path, name: &str) -> bool {
+    let Ok(repo) = Repository::open(path) else {
+        return false;
+    };
+    let tip = repo
+        .find_branch(name, git2::BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().peel_to_commit().ok());
+    let head = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+    match (tip, head) {
+        (Some(tip), Some(head)) => {
+            tip.id() == head.id()
+                || repo
+                    .graph_descendant_of(head.id(), tip.id())
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1459,5 +1586,135 @@ mod tests {
 
         assert_eq!(read_blob(tr.path(), oid, size).unwrap(), Some(png_bytes(1)));
         assert_eq!(read_blob(tr.path(), oid, size - 1).unwrap(), None);
+    }
+
+    #[test]
+    fn validate_new_ref_name_rejects_empty_invalid_and_existing() {
+        let mut tr = TestRepo::new();
+        let tip = tr.commit("base");
+        tr.lightweight_tag("v1", tip);
+
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Branch, "").is_err());
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Branch, "a..b").is_err());
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Tag, "foo.lock").is_err());
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Branch, "main").is_err());
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Tag, "v1").is_err());
+        // A tag name does not clash with a branch of the same name, and vice versa.
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Branch, "v1").is_ok());
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Tag, "main").is_ok());
+        assert!(validate_new_ref_name(tr.path(), NewRefKind::Branch, "feature/x").is_ok());
+    }
+
+    #[test]
+    fn create_branch_points_at_target_and_rejects_duplicates() {
+        let mut tr = TestRepo::new();
+        let first = tr.commit("first");
+        tr.commit("second");
+
+        create_branch(tr.path(), "topic", &first.to_string()).unwrap();
+        assert_eq!(resolve_ref_sha(tr.path(), "topic"), Some(first.to_string()));
+        assert!(create_branch(tr.path(), "topic", &first.to_string()).is_err());
+    }
+
+    #[test]
+    fn create_tag_lightweight_and_annotated() {
+        let mut tr = TestRepo::new();
+        let tip = tr.commit("base");
+        let mut config = tr.repo().config().unwrap();
+        config.set_str("user.name", "Tester").unwrap();
+        config.set_str("user.email", "tester@example.com").unwrap();
+
+        create_tag(tr.path(), "light", &tip.to_string(), None).unwrap();
+        create_tag(tr.path(), "annotated", &tip.to_string(), Some("Release")).unwrap();
+
+        let light = tr.repo().find_reference("refs/tags/light").unwrap();
+        assert_eq!(light.target(), Some(tip));
+        let annotated = tr.repo().find_reference("refs/tags/annotated").unwrap();
+        let tag = annotated.peel_to_tag().unwrap();
+        assert_eq!(tag.message(), Some("Release"));
+        assert_eq!(tag.target_id(), tip);
+
+        let tags = get_tags(tr.path()).unwrap();
+        assert_eq!(
+            tags.get(&tip.to_string()),
+            Some(&vec!["annotated".to_string(), "light".to_string()])
+        );
+    }
+
+    #[test]
+    fn delete_branch_removes_branch_but_not_checked_out_one() {
+        let mut tr = TestRepo::new();
+        tr.commit("base");
+        tr.create_branch("topic", "main");
+        tr.checkout("main");
+
+        delete_branch(tr.path(), "topic").unwrap();
+        assert!(tr.repo().find_reference("refs/heads/topic").is_err());
+        assert!(delete_branch(tr.path(), "main").is_err());
+    }
+
+    #[test]
+    fn delete_tag_removes_lightweight_and_annotated_tags() {
+        let mut tr = TestRepo::new();
+        let tip = tr.commit("base");
+        tr.lightweight_tag("light", tip);
+        tr.annotated_tag("annotated", tip, "Release");
+
+        delete_tag(tr.path(), "light").unwrap();
+        delete_tag(tr.path(), "annotated").unwrap();
+        assert!(get_tag_list(tr.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_stash_drops_entry_by_sha() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        let older = tr.stash("a.txt", "two\n", "first stash", None);
+        let newer = tr.stash("a.txt", "three\n", "second stash", None);
+
+        delete_stash(tr.path(), &older.to_string()).unwrap();
+        let stashes = get_stash_list(tr.path()).unwrap();
+        assert_eq!(stashes.len(), 1);
+        assert_eq!(stashes[0].name, "stash@{0}");
+        assert_eq!(stashes[0].sha, newer.to_string());
+    }
+
+    #[test]
+    fn delete_stash_follows_shifted_indices() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        // `target` starts out as stash@{0} and becomes stash@{1}.
+        let target = tr.stash("a.txt", "two\n", "target", None);
+        let other = tr.stash("a.txt", "three\n", "pushed later", None);
+
+        delete_stash(tr.path(), &target.to_string()).unwrap();
+        let stashes = get_stash_list(tr.path()).unwrap();
+        assert_eq!(stashes.len(), 1);
+        assert_eq!(stashes[0].sha, other.to_string());
+    }
+
+    #[test]
+    fn delete_stash_unknown_sha_is_error() {
+        let mut tr = TestRepo::new();
+        let tip = tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.stash("a.txt", "two\n", "stash", None);
+
+        assert!(delete_stash(tr.path(), &tip.to_string()).is_err());
+        assert_eq!(get_stash_list(tr.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn is_branch_merged_into_head_detects_unmerged_commits() {
+        let mut tr = TestRepo::new();
+        tr.commit("base");
+        tr.create_branch("behind", "main");
+        tr.commit("ahead on main");
+        tr.create_branch("ahead", "main");
+        tr.commit_on("ahead", "only on ahead");
+        tr.checkout("main");
+
+        assert!(is_branch_merged_into_head(tr.path(), "behind"));
+        assert!(is_branch_merged_into_head(tr.path(), "main"));
+        assert!(!is_branch_merged_into_head(tr.path(), "ahead"));
     }
 }

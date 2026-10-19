@@ -15,7 +15,7 @@ pub mod styles;
 pub mod welcome_view;
 pub mod window;
 
-pub use branch_panel::{BranchPanel, RefType};
+pub use branch_panel::{BranchPanel, RefAction, RefType};
 pub use commit_list::{CommitList, CommitLoadRequest, CommitPagingState};
 pub use diff_file_tree::{DiffFileTree, FileSummary};
 pub use grid_cell::{Entry, GridCell};

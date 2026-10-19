@@ -9,6 +9,16 @@
     border-radius: 6px;
 }
 
+/* "+" buttons in the Branches/Tags headers; kept compact so they don't
+   make the header taller. */
+.branch-panel-header-button {
+    min-width: 0;
+    min-height: 0;
+    padding: 2px;
+    margin: -4px 0;
+    -gtk-icon-size: 12px;
+}
+
 .branch-panel-remote-expander {
     margin-left: 8px;
 }

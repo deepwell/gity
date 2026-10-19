@@ -1,9 +1,12 @@
 use gtk::{gio, glib, prelude::*};
 
 use crate::APP_ID;
+use crate::git::NewRefKind;
+use crate::ui::RefAction;
 mod actions;
 mod diff;
 pub mod recent_repos;
+mod ref_ops;
 mod repo;
 mod search;
 mod state;
@@ -69,6 +72,34 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
                 ref_name,
                 ref_type,
             );
+        });
+
+    // Create/delete requests from the branch panel's header buttons and context menus.
+    let window_for_ref_action = window.clone();
+    let ui_for_ref_action = ui.clone();
+    let state_for_ref_action = app_state.clone();
+    ui.repo_view
+        .branch_panel
+        .on_ref_action(move |action| match action {
+            RefAction::NewBranch => ref_ops::show_create_dialog(
+                &window_for_ref_action,
+                &ui_for_ref_action,
+                &state_for_ref_action,
+                NewRefKind::Branch,
+            ),
+            RefAction::NewTag => ref_ops::show_create_dialog(
+                &window_for_ref_action,
+                &ui_for_ref_action,
+                &state_for_ref_action,
+                NewRefKind::Tag,
+            ),
+            RefAction::Delete { name, ref_type } => ref_ops::confirm_delete(
+                &window_for_ref_action,
+                &ui_for_ref_action,
+                &state_for_ref_action,
+                &name,
+                ref_type,
+            ),
         });
 
     // Wire actions + button handlers.

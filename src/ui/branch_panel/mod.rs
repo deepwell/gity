@@ -24,6 +24,15 @@ pub enum RefType {
     Stash,
 }
 
+/// A create or delete request raised from the panel's header buttons and
+/// row context menus (see `on_ref_action`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefAction {
+    NewBranch,
+    NewTag,
+    Delete { name: String, ref_type: RefType },
+}
+
 /// Information about the currently selected reference.
 #[derive(Clone)]
 struct SelectedRef {
@@ -83,6 +92,10 @@ pub struct BranchPanel {
     remotes_label: gtk::Label,
     /// Handler invoked when a ref row is activated (set via `on_ref_selected`)
     activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
+    /// Handler invoked for create/delete requests (set via `on_ref_action`)
+    ref_action_handler: Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>>,
+    /// Name of the checked-out branch, which can't be deleted
+    checked_out_branch: Rc<RefCell<Option<String>>>,
     /// Currently selected reference (name and type)
     selected_ref: Rc<RefCell<Option<SelectedRef>>>,
     /// GSettings for persisting expanded state
@@ -170,6 +183,7 @@ impl BranchPanel {
             .build();
         branches_label_box.add_css_class("branch-panel-expander-label");
         branches_label_box.append(&branches_label);
+        append_header_button(&branches_label_box, "New Branch", "refs.new-branch");
         branches_expander.set_label_widget(Some(&branches_label_box));
         set_expander_chevron_margin(&branches_expander, 10);
 
@@ -198,6 +212,7 @@ impl BranchPanel {
             .build();
         tags_label_box.add_css_class("branch-panel-expander-label");
         tags_label_box.append(&tags_label);
+        append_header_button(&tags_label_box, "New Tag", "refs.new-tag");
         tags_expander.set_label_widget(Some(&tags_label_box));
         set_expander_chevron_margin(&tags_expander, 10);
 
@@ -268,6 +283,43 @@ impl BranchPanel {
         let activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>> =
             Rc::new(RefCell::new(None));
         let selected_ref = Rc::new(RefCell::new(None));
+        let ref_action_handler: Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>> =
+            Rc::new(RefCell::new(None));
+        let checked_out_branch_name = Rc::new(RefCell::new(checked_out_branch.map(String::from)));
+
+        // Create/delete actions, shared by the header buttons and the row
+        // context menus. Remote branches have no menu.
+        let context_ref = Rc::new(RefCell::new(None));
+        let delete_action = install_ref_actions(&side_panel, &ref_action_handler, &context_ref);
+        let ref_menu = gio::Menu::new();
+        let create_section = gio::Menu::new();
+        create_section.append(Some("New Branch…"), Some("refs.new-branch"));
+        create_section.append(Some("New Tag…"), Some("refs.new-tag"));
+        ref_menu.append_section(None, &create_section);
+        let delete_section = gio::Menu::new();
+        delete_section.append(Some("Delete…"), Some("refs.delete"));
+        ref_menu.append_section(None, &delete_section);
+        let stash_menu = gio::Menu::new();
+        stash_menu.append(Some("Delete…"), Some("refs.delete"));
+        // One popover for all sections, parented to the panel's root box.
+        // A list box can't hold it: it may only contain rows.
+        let context_popover = gtk::PopoverMenu::from_model(None::<&gio::MenuModel>);
+        context_popover.set_parent(&side_panel);
+        context_popover.set_has_arrow(true);
+        for (list_box, menu) in [
+            (&branches_list_box, &ref_menu),
+            (&tags_list_box, &ref_menu),
+            (&stashes_list_box, &stash_menu),
+        ] {
+            attach_context_menu(
+                list_box,
+                menu,
+                &context_popover,
+                &context_ref,
+                &checked_out_branch_name,
+                &delete_action,
+            );
+        }
 
         scrolled.set_child(Some(&content_box));
         side_panel.append(&scrolled);
@@ -339,6 +391,8 @@ impl BranchPanel {
             stashes_label,
             remotes_label,
             activate_handler,
+            ref_action_handler,
+            checked_out_branch: checked_out_branch_name,
             selected_ref,
             settings,
         };
@@ -407,6 +461,8 @@ impl BranchPanel {
         }
 
         clear_remotes_section(&self.remotes_content_box, &self.remote_list_boxes);
+
+        *self.checked_out_branch.borrow_mut() = checked_out_branch.map(String::from);
 
         populate_branches_list(&self.branches_list_box, branches, checked_out_branch);
         populate_tags_list(&self.tags_list_box, tags);
@@ -616,6 +672,12 @@ impl BranchPanel {
         });
 
         // Remote list boxes are wired when populated in `populate_remotes_section`.
+    }
+
+    /// Register a callback for create and delete requests from the header
+    /// buttons and row context menus.
+    pub fn on_ref_action<F: Fn(RefAction) + 'static>(&self, callback: F) {
+        *self.ref_action_handler.borrow_mut() = Some(Rc::new(callback));
     }
 
     fn selected_row_ref_info(&self) -> Option<SelectedRef> {
@@ -1003,6 +1065,120 @@ fn set_expander_chevron_margin(expander: &gtk::Expander, margin_start: i32) {
     }
 
     let _ = apply_to_builtin_icon(expander.upcast_ref(), margin_start);
+}
+
+/// Add a small "+" button to the end of a section header that activates `action`.
+fn append_header_button(label_box: &gtk::Box, tooltip: &str, action: &str) {
+    label_box.set_hexpand(true);
+    let button = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text(tooltip)
+        .action_name(action)
+        .halign(gtk::Align::End)
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "branch-panel-header-button"])
+        .build();
+    label_box.append(&button);
+}
+
+/// Install the `refs.*` actions on the panel. `refs.delete` acts on
+/// `context_ref`, the row that was last right-clicked. Returns the delete
+/// action so the context menu can disable it for the checked-out branch.
+fn install_ref_actions(
+    panel: &gtk::Box,
+    handler: &Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>>,
+    context_ref: &Rc<RefCell<Option<SelectedRef>>>,
+) -> gio::SimpleAction {
+    let emit = {
+        let handler = handler.clone();
+        move |action: RefAction| {
+            // Clone out of the cell so the handler may re-register itself.
+            let handler = handler.borrow().clone();
+            if let Some(handler) = handler {
+                handler(action);
+            }
+        }
+    };
+
+    let action_group = gio::SimpleActionGroup::new();
+
+    let new_branch = gio::SimpleAction::new("new-branch", None);
+    let emit_new_branch = emit.clone();
+    new_branch.connect_activate(move |_, _| emit_new_branch(RefAction::NewBranch));
+    action_group.add_action(&new_branch);
+
+    let new_tag = gio::SimpleAction::new("new-tag", None);
+    let emit_new_tag = emit.clone();
+    new_tag.connect_activate(move |_, _| emit_new_tag(RefAction::NewTag));
+    action_group.add_action(&new_tag);
+
+    let delete = gio::SimpleAction::new("delete", None);
+    let context_ref = context_ref.clone();
+    delete.connect_activate(move |_, _| {
+        let target = context_ref.borrow_mut().take();
+        if let Some(SelectedRef { name, ref_type }) = target {
+            emit(RefAction::Delete { name, ref_type });
+        }
+    });
+    action_group.add_action(&delete);
+
+    panel.insert_action_group("refs", Some(&action_group));
+    delete
+}
+
+/// Show `menu` in `popover` when a row of `list_box` is right-clicked. The
+/// list box is kept across refreshes while its rows are rebuilt, so the
+/// gesture is attached here and the clicked row is looked up at click time.
+fn attach_context_menu(
+    list_box: &gtk::ListBox,
+    menu: &gio::Menu,
+    popover: &gtk::PopoverMenu,
+    context_ref: &Rc<RefCell<Option<SelectedRef>>>,
+    checked_out_branch: &Rc<RefCell<Option<String>>>,
+    delete_action: &gio::SimpleAction,
+) {
+    let right_click = gtk::GestureClick::new();
+    right_click.set_button(3);
+    let list_box_for_click = list_box.clone();
+    let context_ref = context_ref.clone();
+    let checked_out_branch = checked_out_branch.clone();
+    let delete_action = delete_action.clone();
+    let popover = popover.clone();
+    let menu = menu.clone();
+    right_click.connect_pressed(move |gesture, _, x, y| {
+        let Some(ref_info) = list_box_for_click
+            .row_at_y(y as i32)
+            .and_then(|row| row_ref_info(&row))
+        else {
+            return;
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+
+        let is_checked_out = ref_info.ref_type == RefType::Branch
+            && checked_out_branch.borrow().as_deref() == Some(ref_info.name.as_str());
+        delete_action.set_enabled(!is_checked_out);
+        *context_ref.borrow_mut() = Some(ref_info);
+
+        // The popover lives on the panel root, so point at the click there.
+        let Some(parent) = popover.parent() else {
+            return;
+        };
+        let Some(point) = list_box_for_click
+            .compute_point(&parent, &gtk::graphene::Point::new(x as f32, y as f32))
+        else {
+            return;
+        };
+        popover.set_menu_model(Some(&menu));
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+            point.x() as i32,
+            point.y() as i32,
+            1,
+            1,
+        )));
+        popover.popup();
+    });
+    list_box.add_controller(right_click);
 }
 
 /// Extract the ref info (name and type) from a list box row.
