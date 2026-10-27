@@ -53,6 +53,19 @@
   </screenshots>
 
   <releases>
+    <release version="2026.7" date="2026-10-26">
+      <description>
+        <ul>
+          <li>Add and remove branches and tags, and drop stashes</li>
+          <li>Create a branch or tag from a commit</li>
+          <li>Search to filter branches, tags, and stashes</li>
+          <li>Show images that were added, updated, or removed in the diff</li>
+          <li>Add a setting to automatically refresh when the repository changes</li>
+          <li>Add a setting to show or hide the number of lines changed per file</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="2026.6" date="2026-09-28">
       <description>
         <ul>
