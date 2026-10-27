@@ -233,4 +233,10 @@ impl WindowUi {
     pub fn show_welcome(&self) {
         self.stack.set_visible_child_name("welcome");
     }
+
+    /// Whether the welcome screen is the current page. This flips as soon as
+    /// `show_main` is called, even while the crossfade is still animating.
+    pub fn is_welcome_visible(&self) -> bool {
+        self.stack.visible_child_name().as_deref() == Some("welcome")
+    }
 }

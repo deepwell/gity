@@ -141,6 +141,13 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
     ui.on_recent_repo_clicked(move |sandbox_path, real_path| {
         use std::time::Instant;
 
+        // Ignore repeated clicks: presses queued while the first load blocked
+        // the main loop, or landing on the cards during the crossfade, would
+        // otherwise each trigger another full repository load.
+        if !ui_for_recent.is_welcome_visible() {
+            return;
+        }
+
         // If a repository is already open, reset UI state first
         if state_for_recent.current_path.borrow().is_some() {
             repo::reset_for_repo_switch(&ui_for_recent, &state_for_recent);
