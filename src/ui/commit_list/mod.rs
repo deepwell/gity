@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
-use crate::git::{self, GitCommit};
+use crate::git::{self, GitCommit, NewRefKind};
 use crate::logger::Logger;
 use crate::ui::{Entry, GridCell};
 
@@ -97,7 +97,17 @@ pub struct CommitList {
     branch_head: Rc<RefCell<Option<(String, String)>>>,
     /// Viewed stash: (stash_name, commit_sha) to show a chip on the stash commit.
     stash_head: Rc<RefCell<Option<(String, String)>>>,
+    /// Handler for "New Branch…"/"New Tag…" in a commit's context menu (set
+    /// via `on_create_ref`).
+    create_ref_handler: CreateRefHandler,
 }
+
+/// The registered create handler, shared with the context menu's actions.
+type CreateRefHandler = Rc<RefCell<Option<Rc<dyn Fn(NewRefKind, String)>>>>;
+
+/// Called when a commit row is right-clicked, with the commit's SHA, the
+/// clicked cell, and the click position in the cell's coordinates.
+type ContextClickHandler = Rc<dyn Fn(&str, &gtk::Widget, f64, f64)>;
 
 impl CommitList {
     /// Create a new CommitList widget.
@@ -110,6 +120,8 @@ impl CommitList {
         let upstream: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let branch_head: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let stash_head: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
+        let create_ref_handler: CreateRefHandler = Rc::new(RefCell::new(None));
+        let on_context_click = install_context_menu(&column_view, &create_ref_handler);
 
         // Create column factories
         let message_column = create_message_column_with_tags(
@@ -119,10 +131,25 @@ impl CommitList {
             upstream.clone(),
             branch_head.clone(),
             stash_head.clone(),
+            on_context_click.clone(),
         );
-        let author_column = create_column("Author", 150, false, |c: &GitCommit| c.author.clone());
-        let sha_column = create_column("SHA", 120, false, |c: &GitCommit| short_sha(&c.id));
-        let date_column = create_column("Date", 200, false, |c: &GitCommit| c.date.clone());
+        let author_column = create_column(
+            "Author",
+            150,
+            false,
+            on_context_click.clone(),
+            |c: &GitCommit| c.author.clone(),
+        );
+        let sha_column = create_column(
+            "SHA",
+            120,
+            false,
+            on_context_click.clone(),
+            |c: &GitCommit| short_sha(&c.id),
+        );
+        let date_column = create_column("Date", 200, false, on_context_click, |c: &GitCommit| {
+            c.date.clone()
+        });
 
         column_view.append_column(&message_column);
         column_view.append_column(&author_column);
@@ -150,7 +177,15 @@ impl CommitList {
             upstream,
             branch_head,
             stash_head,
+            create_ref_handler,
         }
+    }
+
+    /// Register the handler for "New Branch…" and "New Tag…" in a commit's
+    /// context menu. It is called with the kind of ref to create and the SHA
+    /// of the right-clicked commit.
+    pub fn on_create_ref<F: Fn(NewRefKind, String) + 'static>(&self, callback: F) {
+        *self.create_ref_handler.borrow_mut() = Some(Rc::new(callback));
     }
 
     /// Load commits from a repository branch.
@@ -341,15 +376,22 @@ fn short_sha(id: &str) -> String {
 }
 
 /// Create a column for the commit list view.
-fn create_column<F>(title: &str, width: i32, expand: bool, extractor: F) -> gtk::ColumnViewColumn
+fn create_column<F>(
+    title: &str,
+    width: i32,
+    expand: bool,
+    on_context_click: ContextClickHandler,
+    extractor: F,
+) -> gtk::ColumnViewColumn
 where
     F: Fn(&GitCommit) -> String + 'static + Clone,
 {
     let factory = gtk::SignalListItemFactory::new();
 
-    factory.connect_setup(|_factory, item| {
+    factory.connect_setup(move |_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         let row = GridCell::default();
+        attach_context_click(row.upcast_ref(), item, &on_context_click);
         item.set_child(Some(&row));
     });
 
@@ -372,6 +414,91 @@ where
         column.set_expand(true);
     }
     column
+}
+
+/// Install the commit context menu on `column_view` and return the handler
+/// that shows it for a right-clicked cell. The menu's actions act on the
+/// commit that was last right-clicked.
+fn install_context_menu(
+    column_view: &gtk::ColumnView,
+    create_ref_handler: &CreateRefHandler,
+) -> ContextClickHandler {
+    let context_sha: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    let action_group = gio::SimpleActionGroup::new();
+    for (name, kind) in [
+        ("new-branch", NewRefKind::Branch),
+        ("new-tag", NewRefKind::Tag),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
+        let create_ref_handler = create_ref_handler.clone();
+        let context_sha = context_sha.clone();
+        action.connect_activate(move |_, _| {
+            let sha = context_sha.borrow_mut().take();
+            // Clone out of the cell so the handler may re-register itself.
+            let handler = create_ref_handler.borrow().clone();
+            if let (Some(sha), Some(handler)) = (sha, handler) {
+                handler(kind, sha);
+            }
+        });
+        action_group.add_action(&action);
+    }
+    column_view.insert_action_group("commit", Some(&action_group));
+
+    let menu = gio::Menu::new();
+    menu.append(Some("New Branch…"), Some("commit.new-branch"));
+    menu.append(Some("New Tag…"), Some("commit.new-tag"));
+    // One popover for all rows; cells are recycled as the list scrolls, so
+    // none of them can own it.
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_parent(column_view);
+    popover.set_has_arrow(true);
+
+    let column_view = column_view.clone();
+    Rc::new(move |sha, cell, x, y| {
+        let Some(point) =
+            cell.compute_point(&column_view, &gtk::graphene::Point::new(x as f32, y as f32))
+        else {
+            return;
+        };
+        *context_sha.borrow_mut() = Some(sha.to_string());
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+            point.x() as i32,
+            point.y() as i32,
+            1,
+            1,
+        )));
+        popover.popup();
+    })
+}
+
+/// Report right-clicks on `cell` to `on_context_click` with the SHA of the
+/// commit currently bound to `item`.
+fn attach_context_click(
+    cell: &gtk::Widget,
+    item: &gtk::ListItem,
+    on_context_click: &ContextClickHandler,
+) {
+    let right_click = gtk::GestureClick::new();
+    right_click.set_button(3);
+    // Weak: the item owns the cell, which owns this gesture.
+    let item = item.downgrade();
+    let on_context_click = on_context_click.clone();
+    right_click.connect_pressed(move |gesture, _, x, y| {
+        let Some(entry_obj) = item
+            .upgrade()
+            .and_then(|item| item.item())
+            .and_downcast::<glib::BoxedAnyObject>()
+        else {
+            return;
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let sha = entry_obj.borrow::<GitCommit>().id.clone();
+        if let Some(cell) = gesture.widget() {
+            on_context_click(&sha, &cell, x, y);
+        }
+    });
+    cell.add_controller(right_click);
 }
 
 /// Maximum number of pre-allocated tag chips per row.
@@ -435,10 +562,11 @@ fn create_message_column_with_tags(
     upstream: Rc<RefCell<Option<(String, String)>>>,
     branch_head: Rc<RefCell<Option<(String, String)>>>,
     stash_head: Rc<RefCell<Option<(String, String)>>>,
+    on_context_click: ContextClickHandler,
 ) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
 
-    factory.connect_setup(|_factory, item| {
+    factory.connect_setup(move |_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
         let container = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -471,6 +599,7 @@ fn create_message_column_with_tags(
         message_label.set_widget_name("commit-message");
 
         container.append(&message_label);
+        attach_context_click(container.upcast_ref(), item, &on_context_click);
         item.set_child(Some(&container));
     });
 

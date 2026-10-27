@@ -86,12 +86,14 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
                 &ui_for_ref_action,
                 &state_for_ref_action,
                 NewRefKind::Branch,
+                None,
             ),
             RefAction::NewTag => ref_ops::show_create_dialog(
                 &window_for_ref_action,
                 &ui_for_ref_action,
                 &state_for_ref_action,
                 NewRefKind::Tag,
+                None,
             ),
             RefAction::Delete { name, ref_type } => ref_ops::confirm_delete(
                 &window_for_ref_action,
@@ -101,6 +103,20 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
                 ref_type,
             ),
         });
+
+    // "New Branch…"/"New Tag…" from a commit's context menu.
+    let window_for_commit_ref = window.clone();
+    let ui_for_commit_ref = ui.clone();
+    let state_for_commit_ref = app_state.clone();
+    ui.repo_view.commit_list.on_create_ref(move |kind, sha| {
+        ref_ops::show_create_dialog(
+            &window_for_commit_ref,
+            &ui_for_commit_ref,
+            &state_for_commit_ref,
+            kind,
+            Some(sha),
+        )
+    });
 
     // Wire actions + button handlers.
     actions::install(&window, &ui, &app_state);

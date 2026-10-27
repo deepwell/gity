@@ -13,21 +13,24 @@ use super::state::AppState;
 use super::ui::WindowUi;
 
 /// Ask for the name (and, for tags, an optional message) of a new branch or
-/// tag, then create it at the selected commit or, failing that, at the tip of
-/// the viewed ref.
+/// tag, then create it at `target_sha` when given, else at the selected commit
+/// or, failing that, at the tip of the viewed ref.
 pub fn show_create_dialog(
     window: &gtk::ApplicationWindow,
     ui: &WindowUi,
     state: &AppState,
     kind: NewRefKind,
+    target_sha: Option<String>,
 ) {
     let Some(path) = state.current_path.borrow().clone() else {
         return;
     };
-    let target_sha = ui.repo_view.commit_list.selected_commit_sha().or_else(|| {
-        let current_ref = state.current_ref.borrow().clone()?;
-        git::resolve_ref_sha(&path, &current_ref)
-    });
+    let target_sha = target_sha
+        .or_else(|| ui.repo_view.commit_list.selected_commit_sha())
+        .or_else(|| {
+            let current_ref = state.current_ref.borrow().clone()?;
+            git::resolve_ref_sha(&path, &current_ref)
+        });
     let Some(target_sha) = target_sha else {
         ui.show_toast(&format!(
             "There is no commit to create the {} at",
