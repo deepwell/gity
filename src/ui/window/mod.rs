@@ -4,6 +4,7 @@ use crate::APP_ID;
 use crate::git::NewRefKind;
 use crate::ui::RefAction;
 mod actions;
+mod auto_refresh;
 mod diff;
 pub mod recent_repos;
 mod ref_ops;
@@ -246,6 +247,10 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
     settings.connect_changed(Some("show-diff-file-tree"), move |settings, key| {
         repo_view_for_file_tree.set_file_tree_enabled(settings.boolean(key));
     });
+
+    // Reload when the repository changes on disk, if enabled from the header menu.
+    window.add_action(&settings.create_action("auto-refresh"));
+    auto_refresh::install(window, ui, app_state, &settings);
 
     // Main/welcome views are added by ui::WindowUi::build().
 

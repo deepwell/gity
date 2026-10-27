@@ -824,6 +824,52 @@ pub fn validate_repository(path: &Path) -> Result<(), git2::Error> {
     Repository::open(path).map(|_| ())
 }
 
+/// The repository's git directory (holding `HEAD`) and common directory
+/// (holding `refs/`, `packed-refs` and `logs/refs/`). They differ only for
+/// linked worktrees.
+pub fn git_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let repo = Repository::open(path).ok()?;
+    Some((repo.path().to_path_buf(), repo.commondir().to_path_buf()))
+}
+
+/// A hash of everything the repository view shows that can change on disk:
+/// HEAD, every reference, and the stash list. Equal fingerprints mean a
+/// reload would show the same refs and commits.
+pub fn repo_state_fingerprint(path: &Path) -> Result<u64, Error> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    fn target(reference: &git2::Reference) -> Vec<u8> {
+        match reference.symbolic_target_bytes() {
+            Some(name) => name.to_vec(),
+            None => reference
+                .target()
+                .map(|oid| oid.as_bytes().to_vec())
+                .unwrap_or_default(),
+        }
+    }
+
+    let repo = Repository::open(path)?;
+    let mut hasher = DefaultHasher::new();
+
+    target(&repo.find_reference("HEAD")?).hash(&mut hasher);
+
+    // Sorted, since iteration order changes when loose refs get packed.
+    let mut refs = Vec::new();
+    for reference in repo.references()? {
+        let reference = reference?;
+        refs.push((reference.name_bytes().to_vec(), target(&reference)));
+    }
+    refs.sort();
+    refs.hash(&mut hasher);
+
+    // `refs/stash` only names the newest stash; the reflog holds the rest.
+    for entry in repo.reflog("refs/stash")?.iter() {
+        entry.id_new().as_bytes().hash(&mut hasher);
+    }
+
+    Ok(hasher.finish())
+}
+
 /// If `path` is inside a git worktree (or is a bare repo), return the best path
 /// to open in the UI:
 /// - worktree root for normal repositories
@@ -1716,5 +1762,43 @@ mod tests {
         assert!(is_branch_merged_into_head(tr.path(), "behind"));
         assert!(is_branch_merged_into_head(tr.path(), "main"));
         assert!(!is_branch_merged_into_head(tr.path(), "ahead"));
+    }
+
+    #[test]
+    fn repo_state_fingerprint_is_stable_without_changes() {
+        let mut tr = TestRepo::new();
+        tr.commit("base");
+        let before = repo_state_fingerprint(tr.path()).unwrap();
+        assert_eq!(repo_state_fingerprint(tr.path()).unwrap(), before);
+    }
+
+    #[test]
+    fn repo_state_fingerprint_changes_with_refs() {
+        let mut tr = TestRepo::new();
+        let base = tr.commit_file("main", "a.txt", "one\n", "base");
+        let mut last = repo_state_fingerprint(tr.path()).unwrap();
+        let mut assert_changed = |tr: &TestRepo, what: &str| {
+            let now = repo_state_fingerprint(tr.path()).unwrap();
+            assert_ne!(now, last, "fingerprint unchanged after {what}");
+            last = now;
+        };
+
+        tr.commit("next");
+        assert_changed(&tr, "commit");
+        tr.create_branch("feature/x", "main");
+        assert_changed(&tr, "create branch");
+        tr.lightweight_tag("v1", base);
+        assert_changed(&tr, "create tag");
+        tr.create_remote_ref("origin/main", base);
+        assert_changed(&tr, "create remote ref");
+        tr.checkout("feature/x");
+        assert_changed(&tr, "checkout");
+        tr.stash("a.txt", "two\n", "first stash", None);
+        assert_changed(&tr, "stash");
+        tr.stash("a.txt", "three\n", "second stash", None);
+        assert_changed(&tr, "second stash");
+        // Dropping an older entry leaves `refs/stash` itself untouched.
+        tr.drop_stash(1);
+        assert_changed(&tr, "drop older stash");
     }
 }

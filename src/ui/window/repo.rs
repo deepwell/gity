@@ -68,6 +68,9 @@ pub fn load_repo_with_selection(
     }
 
     *state.current_path.borrow_mut() = Some(path.clone());
+    // Fingerprint before reading any refs, so a change made while loading
+    // still differs from it and triggers another auto-refresh.
+    *state.loaded_fingerprint.borrow_mut() = git::repo_state_fingerprint(&path).ok();
 
     // Commits (and the first-commit diff) load asynchronously. Start from a
     // blank diff so a leftover empty-state placeholder cannot flash during
@@ -192,6 +195,8 @@ pub fn load_repo_with_selection(
         Some(&effective_ref),
     );
     let _ = ui.repo_view.branch_panel.select_ref(&effective_ref);
+
+    state.notify_repo_changed();
 }
 
 /// Switch to a different branch or tag within the same repository.

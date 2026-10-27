@@ -36,6 +36,11 @@
       <summary>Show lines updated per file</summary>
       <description>Whether the changed-files column, listing the lines added and removed per file, is shown beside the commit diff on wide windows</description>
     </key>
+    <key name="auto-refresh" type="b">
+      <default>false</default>
+      <summary>Auto-refresh repository</summary>
+      <description>Reload the open repository automatically when its branches, tags, or stashes change on disk</description>
+    </key>
     <key name="recent-repositories" type="s">
       <default>"[]"</default>
       <summary>Recent repositories</summary>

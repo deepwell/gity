@@ -83,6 +83,7 @@ impl WindowUi {
             Some("Show Lines Updated Per File"),
             Some("win.show-diff-file-tree"),
         );
+        view_section.append(Some("Auto-Refresh"), Some("win.auto-refresh"));
         menu.append_section(None, &view_section);
         menu.append_section(None, &menu_section);
         menu_button.set_menu_model(Some(&menu));
