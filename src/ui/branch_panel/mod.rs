@@ -1251,7 +1251,7 @@ fn branch_priority(name: &str) -> u8 {
 }
 
 /// Sort tags alphabetically using natural sort (reverse order so newest versions appear first).
-fn sort_tags(tags: &[TagInfo]) -> Vec<TagInfo> {
+pub(crate) fn sort_tags(tags: &[TagInfo]) -> Vec<TagInfo> {
     let mut sorted = tags.to_vec();
     sorted.sort_by(|a, b| natural_compare(&b.name, &a.name));
     sorted

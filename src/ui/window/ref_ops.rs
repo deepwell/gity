@@ -5,6 +5,7 @@ use adw::prelude::*;
 
 use crate::git::{self, NewRefKind};
 use crate::ui::RefType;
+use crate::ui::branch_panel::sort_tags;
 
 use super::APP_NAME;
 use super::repo;
@@ -218,6 +219,14 @@ pub fn confirm_delete(
             }
         };
 
+        // Find the neighbouring tag or stash now, while the deleted one still
+        // marks its place in the list.
+        let neighbor = if is_viewed {
+            neighbor_ref(&path, ref_type, &name, stash_sha.as_deref())
+        } else {
+            None
+        };
+
         let result = match (ref_type, &stash_sha) {
             (RefType::Branch, _) => git::delete_branch(&path, &name),
             (RefType::Tag, _) => git::delete_tag(&path, &name),
@@ -228,9 +237,19 @@ pub fn confirm_delete(
         match result {
             Ok(()) => {
                 if is_viewed {
-                    // The viewed ref is gone; show the default branch rather
-                    // than letting a refresh report it (and the selection) missing.
-                    repo::load_repo(&ui, &state, APP_NAME, path.clone(), None);
+                    // The viewed ref is gone; show its neighbour in the list,
+                    // or else the default branch, rather than letting a
+                    // refresh report it (and the selection) missing.
+                    let next_ref = neighbor.and_then(|neighbor| match neighbor {
+                        Neighbor::Tag(name) => Some(name),
+                        // Dropping a stash renumbers the ones after it.
+                        Neighbor::Stash(sha) => git::get_stash_list(&path)
+                            .ok()?
+                            .into_iter()
+                            .find(|s| s.sha == sha)
+                            .map(|s| s.name),
+                    });
+                    repo::load_repo(&ui, &state, APP_NAME, path.clone(), next_ref);
                 } else {
                     repo::refresh_repo(&ui, &state, APP_NAME);
                 }
@@ -247,6 +266,45 @@ pub fn confirm_delete(
     dialog.present(Some(window));
 }
 
+/// A tag or stash to show in place of one being deleted. Stashes are held by
+/// SHA because their `stash@{N}` names shift when one is dropped.
+enum Neighbor {
+    Tag(String),
+    Stash(String),
+}
+
+/// The tag or stash listed after `name` in the branch panel (or before it,
+/// when it is last), or `None` if it is the only one or a branch.
+fn neighbor_ref(
+    path: &std::path::Path,
+    ref_type: RefType,
+    name: &str,
+    stash_sha: Option<&str>,
+) -> Option<Neighbor> {
+    match ref_type {
+        RefType::Tag => {
+            let tags = sort_tags(&git::get_tag_list(path).ok()?);
+            let index = tags.iter().position(|t| t.name == name)?;
+            adjacent(&tags, index).map(|t| Neighbor::Tag(t.name.clone()))
+        }
+        RefType::Stash => {
+            let stashes = git::get_stash_list(path).ok()?;
+            let index = stashes
+                .iter()
+                .position(|s| Some(s.sha.as_str()) == stash_sha)?;
+            adjacent(&stashes, index).map(|s| Neighbor::Stash(s.sha.clone()))
+        }
+        RefType::Branch | RefType::Remote => None,
+    }
+}
+
+/// The item after `index`, or the one before it when `index` is last.
+fn adjacent<T>(items: &[T], index: usize) -> Option<&T> {
+    items
+        .get(index + 1)
+        .or_else(|| index.checked_sub(1).and_then(|i| items.get(i)))
+}
+
 fn ref_type_label(ref_type: RefType) -> &'static str {
     match ref_type {
         RefType::Branch => "branch",
@@ -258,4 +316,25 @@ fn ref_type_label(ref_type: RefType) -> &'static str {
 
 fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adjacent_prefers_the_next_item() {
+        assert_eq!(adjacent(&["a", "b", "c"], 0), Some(&"b"));
+        assert_eq!(adjacent(&["a", "b", "c"], 1), Some(&"c"));
+    }
+
+    #[test]
+    fn adjacent_falls_back_to_the_previous_item_when_last() {
+        assert_eq!(adjacent(&["a", "b", "c"], 2), Some(&"b"));
+    }
+
+    #[test]
+    fn adjacent_is_none_for_a_lone_item() {
+        assert_eq!(adjacent(&["a"], 0), None);
+    }
 }
