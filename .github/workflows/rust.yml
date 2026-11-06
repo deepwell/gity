@@ -13,8 +13,21 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7
+    - name: Cache apt packages
+      uses: actions/cache@v6
+      with:
+        path: ~/apt-cache/*.deb
+        key: apt-${{ hashFiles('.github/workflows/rust.yml') }}-${{ github.run_id }}
+        restore-keys: apt-${{ hashFiles('.github/workflows/rust.yml') }}-
     - name: Install dependencies
-      run: sudo apt-get install -y pkg-config libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libssl-dev libglib2.0-dev-bin libseccomp-dev libfontconfig-dev
+      # The runner image ships a stale package index. Without an update, apt
+      # asks the mirror for package versions it has already replaced and gets
+      # a 404. The .deb files land in ~/apt-cache, which the cache step saves
+      # and restores, so later runs only download packages that changed.
+      run: |
+        mkdir -p ~/apt-cache
+        sudo apt-get update
+        sudo apt-get install -y -o Dir::Cache::Archives=$HOME/apt-cache pkg-config libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libssl-dev libglib2.0-dev-bin libseccomp-dev libfontconfig-dev
     - name: Build
       run: cargo build --verbose
     - name: Run tests
