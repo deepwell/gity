@@ -32,6 +32,8 @@ To build and run the development version:
 cargo run
 ```
 
+Debug builds made directly with Cargo use the application ID `com.markdeepwell.GitY.Devel` and keep their settings under `/com/markdeepwell/gity-devel/`, so the development version runs alongside an installed GitY without sharing its window state or recent repositories.
+
 ### Build and Install
 To build and install the current version:
 ```bash

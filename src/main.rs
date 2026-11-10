@@ -13,7 +13,11 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 
-pub const APP_ID: &str = "com.markdeepwell.GitY";
+/// Application ID, which is also the GSettings schema ID and the name of the
+/// bundled application icon. build.rs picks it: debug builds made directly with
+/// Cargo get `com.markdeepwell.GitY.Devel`, so `cargo run` can run next to an
+/// installed GitY, keeps its own settings and shows the development icon.
+pub const APP_ID: &str = env!("GITY_APP_ID");
 pub const DEVELOPER_NAME: &str = "Mark Deepwell";
 
 fn main() -> glib::ExitCode {

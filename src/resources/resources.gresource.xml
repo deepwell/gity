@@ -6,5 +6,6 @@
   </gresource>
   <gresource prefix="/com/markdeepwell/gity/icons">
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/apps/com.markdeepwell.GitY.svg">../../data/icons/hicolor/scalable/apps/com.markdeepwell.GitY.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks" alias="scalable/apps/com.markdeepwell.GitY.Devel.svg">../../data/icons/com.markdeepwell.GitY.Devel.svg</file>
   </gresource>
 </gresources>
