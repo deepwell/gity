@@ -24,6 +24,12 @@
 }
 
 /* COMMIT LIST */
+/* "Uncommitted changes" row above the newest commit */
+.uncommitted-changes {
+    font-style: italic;
+    font-weight: 500;
+}
+
 /* Tag chip styling */
 .tag-chip {
     background-color: alpha(@accent_color, 0.2);

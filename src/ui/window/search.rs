@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::search::SearchHandler;
+use crate::ui::commit_list::row_offset;
 use crate::ui::{CommitLoadRequest, CommitPagingState};
 
 use super::state::AppState;
@@ -29,13 +30,11 @@ fn ensure_loaded_then_select(
         return;
     }
 
-    if store.n_items() > target_index {
-        selection_model.select_item(target_index, true);
-        crate::search::SearchHandler::scroll_to_item(
-            &scrolled_window,
-            &selection_model,
-            target_index,
-        );
+    // Search indices count commits only; skip the uncommitted row if shown.
+    let row = target_index + row_offset(&store);
+    if store.n_items() > row {
+        selection_model.select_item(row, true);
+        crate::search::SearchHandler::scroll_to_item(&scrolled_window, &selection_model, row);
         return;
     }
 
@@ -444,7 +443,7 @@ fn poll_search_result(
         // Search matches are global indices (revwalk order), while the UI list is loaded lazily.
         if result.error.is_none() && !result.matching_indices.is_empty() {
             let first_index = result.matching_indices[0];
-            if store.n_items() <= first_index {
+            if store.n_items() <= first_index + row_offset(&store) {
                 let mut st = commit_paging_state.borrow_mut();
                 let can_page = !st.done && st.request_tx.is_some();
                 if can_page && attempt < 200 {

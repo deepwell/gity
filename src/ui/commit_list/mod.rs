@@ -65,6 +65,11 @@ pub struct CommitPagingState {
     /// Called when `pending_select_sha` could not be found and the first
     /// commit was selected instead.
     pub on_pending_select_missing: Option<Box<dyn Fn()>>,
+    /// Whether the first page of commits has been added to the store.
+    pub first_page_loaded: bool,
+    /// Result of the uncommitted-changes check, which runs alongside the
+    /// commit pages: `None` until it reports, then whether the row is shown.
+    pub worktree_row: Option<bool>,
 }
 
 /// A scrollable list widget displaying git commits with infinite scroll support.
@@ -145,7 +150,13 @@ impl CommitList {
             120,
             false,
             on_context_click.clone(),
-            |c: &GitCommit| short_sha(&c.id),
+            |c: &GitCommit| {
+                if c.is_worktree() {
+                    String::new()
+                } else {
+                    short_sha(&c.id)
+                }
+            },
         );
         let date_column = create_column("Date", 200, false, on_context_click, |c: &GitCommit| {
             c.date.clone()
@@ -283,7 +294,8 @@ impl CommitList {
         (0..n).filter(|&i| bitset.contains(i)).collect()
     }
 
-    /// Return the SHA of the first (newest) selected commit, if any.
+    /// Return the SHA of the first (newest) selected commit, if any. This is
+    /// `git::WORKTREE_ID` when the "Uncommitted changes" row is selected.
     pub fn selected_commit_sha(&self) -> Option<String> {
         let indices = self.selected_indices();
         indices
@@ -323,6 +335,8 @@ impl CommitList {
             st.pending_select_sha = None;
             st.pending_select_pages_loaded = 0;
             st.on_pending_select_missing = None;
+            st.first_page_loaded = false;
+            st.worktree_row = None;
         }
 
         // Clear tags, upstream, branch head, and stash head.
@@ -358,6 +372,9 @@ enum CommitLoadResponse {
         done: bool,
         is_first_page: bool,
     },
+    /// The uncommitted-changes check finished. May arrive before or after
+    /// the first page.
+    WorktreeRow { generation: u64, show: bool },
     /// An error occurred while loading commits.
     Error { generation: u64, message: String },
 }
@@ -365,6 +382,17 @@ enum CommitLoadResponse {
 // =============================================================================
 // Private helper functions
 // =============================================================================
+
+/// Number of rows in `store` above the first commit: 1 while the
+/// "Uncommitted changes" row is shown, else 0. Add it to a revwalk index
+/// (e.g. a search match) to get that commit's row.
+pub fn row_offset(store: &gio::ListStore) -> u32 {
+    let is_worktree = store
+        .item(0)
+        .and_downcast::<glib::BoxedAnyObject>()
+        .is_some_and(|obj| obj.borrow::<GitCommit>().is_worktree());
+    u32::from(is_worktree)
+}
 
 /// Number of leading characters shown for an abbreviated commit SHA.
 const SHORT_SHA_LEN: usize = 7;
@@ -492,8 +520,14 @@ fn attach_context_click(
         else {
             return;
         };
+        let commit = entry_obj.borrow::<GitCommit>();
+        // Branches and tags can't point at uncommitted changes.
+        if commit.is_worktree() {
+            return;
+        }
+        let sha = commit.id.clone();
+        drop(commit);
         gesture.set_state(gtk::EventSequenceState::Claimed);
-        let sha = entry_obj.borrow::<GitCommit>().id.clone();
         if let Some(cell) = gesture.widget() {
             on_context_click(&sha, &cell, x, y);
         }
@@ -677,6 +711,11 @@ fn create_message_column_with_tags(
                 if let Some(label) = widget.downcast_ref::<gtk::Inscription>() {
                     let first_line = commit.message.lines().next().unwrap_or("").trim();
                     label.set_text(Some(first_line));
+                    if commit.is_worktree() {
+                        label.add_css_class("uncommitted-changes");
+                    } else {
+                        label.remove_css_class("uncommitted-changes");
+                    }
                 }
             }
             child = widget.next_sibling();
@@ -767,6 +806,52 @@ fn find_commit_index_by_sha(store: &gio::ListStore, sha: &str) -> Option<u32> {
     None
 }
 
+/// Record the uncommitted-changes check result and, once the first page is
+/// in, add the row above it. Before that, the first page adds it instead.
+fn apply_worktree_row(
+    scrolled_window: &gtk::ScrolledWindow,
+    store: &gio::ListStore,
+    selection_model: &gtk::MultiSelection,
+    paging_state: &Rc<RefCell<CommitPagingState>>,
+    show: bool,
+) {
+    let mut st = paging_state.borrow_mut();
+    st.worktree_row = Some(show);
+    if !st.first_page_loaded {
+        return;
+    }
+    let restore_selection = st
+        .pending_select_sha
+        .as_deref()
+        .is_some_and(git::is_worktree_id);
+    if restore_selection {
+        st.pending_select_sha = None;
+        st.on_pending_select_missing = None;
+    }
+    drop(st);
+
+    if show {
+        let at_top = scrolled_window.vadjustment().value() <= 0.0;
+        // The selection model shifts the existing selection down with it,
+        // so this doesn't change what is selected or reload the diff.
+        store.insert(
+            0,
+            &glib::BoxedAnyObject::new(GitCommit::worktree_placeholder()),
+        );
+        // The list keeps the previously first row in place, which would leave
+        // the new row just above the viewport.
+        let column_view = scrolled_window.child().and_downcast::<gtk::ColumnView>();
+        if let Some(column_view) = column_view.filter(|_| at_top || restore_selection) {
+            column_view.scroll_to(0, None, gtk::ListScrollFlags::NONE, None);
+        }
+    }
+    // The newest row is the uncommitted one if shown, else the newest commit;
+    // either way it is the best match for a selected uncommitted row.
+    if restore_selection && store.n_items() > 0 {
+        selection_model.select_item(0, true);
+    }
+}
+
 /// Poll for commit page results from the background worker.
 fn poll_commit_pages(
     rx: mpsc::Receiver<CommitLoadResponse>,
@@ -796,6 +881,11 @@ fn poll_commit_pages(
                     continue;
                 }
 
+                // The check may have finished first; then the row goes on top now.
+                let worktree_row = paging_state.borrow().worktree_row;
+                if is_first_page && worktree_row == Some(true) {
+                    store.append(&glib::BoxedAnyObject::new(GitCommit::worktree_placeholder()));
+                }
                 for commit in commits {
                     store.append(&glib::BoxedAnyObject::new(GitCommit {
                         id: commit.id,
@@ -809,16 +899,29 @@ fn poll_commit_pages(
                     let mut st = paging_state.borrow_mut();
                     st.is_loading = false;
                     st.done = done;
+                    st.first_page_loaded = true;
                 }
 
                 // Try to honor any pending selection SHA before the default
                 // "select first commit on first page" behavior. This is what
                 // preserves the user's selected commit across a refresh.
-                let had_pending_target = paging_state.borrow().pending_select_sha.is_some();
+                let mut had_pending_target = paging_state.borrow().pending_select_sha.is_some();
                 let mut found_pending_target = false;
                 let pending_sha = paging_state.borrow().pending_select_sha.clone();
-                if let Some(sha) = pending_sha {
-                    if let Some(idx) = find_commit_index_by_sha(&store, &sha) {
+                // A selected uncommitted row is restored by the
+                // `WorktreeRow` handler if the check hasn't reported yet.
+                let awaiting_worktree_row = pending_sha.as_deref().is_some_and(git::is_worktree_id)
+                    && worktree_row.is_none();
+                if let Some(sha) = pending_sha.filter(|_| !awaiting_worktree_row) {
+                    // The uncommitted row is only ever first, and it goes away
+                    // once the changes are committed or discarded: then fall
+                    // back to the newest commit without reporting it missing.
+                    if git::is_worktree_id(&sha) && worktree_row != Some(true) {
+                        let mut st = paging_state.borrow_mut();
+                        st.pending_select_sha = None;
+                        st.on_pending_select_missing = None;
+                        had_pending_target = false;
+                    } else if let Some(idx) = find_commit_index_by_sha(&store, &sha) {
                         selection_model.select_item(idx, true);
                         crate::search::SearchHandler::scroll_to_item(
                             &scrolled_window,
@@ -836,10 +939,12 @@ fn poll_commit_pages(
                 if is_first_page {
                     (on_first_page_branch)(branch_name);
 
-                    // Only auto-select the first commit when no target SHA
-                    // was requested (or it was already found above).
-                    if !had_pending_target && store.n_items() > 0 {
-                        selection_model.select_item(0, true);
+                    // Only auto-select the newest commit when no target SHA
+                    // was requested (or it was already found above). The
+                    // uncommitted row, if any, stays a click away.
+                    let newest = row_offset(&store);
+                    if !had_pending_target && store.n_items() > newest {
+                        selection_model.select_item(newest, true);
                     }
 
                     // Optional "open repo" perf log (first page only).
@@ -859,7 +964,7 @@ fn poll_commit_pages(
                 // If a target was pending and we still haven't found it,
                 // either auto-load the next page or fall back to selecting
                 // the first commit if we've exhausted our budget.
-                if had_pending_target && !found_pending_target {
+                if had_pending_target && !found_pending_target && !awaiting_worktree_row {
                     let mut st = paging_state.borrow_mut();
                     if st.pending_select_sha.is_some() {
                         st.pending_select_pages_loaded =
@@ -870,8 +975,9 @@ fn poll_commit_pages(
                             st.pending_select_sha = None;
                             let on_missing = st.on_pending_select_missing.take();
                             drop(st);
-                            if selection_model.selection().is_empty() && store.n_items() > 0 {
-                                selection_model.select_item(0, true);
+                            let newest = row_offset(&store);
+                            if selection_model.selection().is_empty() && store.n_items() > newest {
+                                selection_model.select_item(newest, true);
                             }
                             if let Some(on_missing) = on_missing {
                                 on_missing();
@@ -884,6 +990,18 @@ fn poll_commit_pages(
                         }
                     }
                 }
+            }
+            Ok(CommitLoadResponse::WorktreeRow { generation, show }) => {
+                if generation != expected_generation {
+                    continue;
+                }
+                apply_worktree_row(
+                    &scrolled_window,
+                    &store,
+                    &selection_model,
+                    &paging_state,
+                    show,
+                );
             }
             Ok(CommitLoadResponse::Error {
                 generation,
@@ -959,6 +1077,8 @@ fn start_commit_paging(
         st.pending_select_sha = initial_selection_sha;
         st.pending_select_pages_loaded = 0;
         st.on_pending_select_missing = on_selection_missing;
+        st.first_page_loaded = false;
+        st.worktree_row = None;
     }
 
     // New generation for this load.
@@ -994,6 +1114,25 @@ fn start_commit_paging(
     std::thread::spawn(move || {
         let commit_ref = branch_for_thread;
         let actual_branch_name = commit_ref.clone();
+
+        // `git status` can take a while on a large working tree (~200 ms for
+        // the Linux kernel). It runs on its own thread once the first page is
+        // sent, so it neither holds back nor competes with that page, and the
+        // row is added when it reports.
+        let mut start_worktree_check = Some({
+            let path = path_for_thread.clone();
+            let commit_ref = commit_ref.clone();
+            let res_tx = res_tx.clone();
+            move || {
+                std::thread::spawn(move || {
+                    let show = git::ref_has_worktree_changes(&path, &commit_ref);
+                    let _ = res_tx.send(CommitLoadResponse::WorktreeRow {
+                        generation: expected_generation,
+                        show,
+                    });
+                });
+            }
+        });
 
         let repo = match git2::Repository::open(&path_for_thread) {
             Ok(r) => r,
@@ -1045,6 +1184,9 @@ fn start_commit_paging(
                         done,
                         is_first_page,
                     });
+                    if let Some(start) = start_worktree_check.take() {
+                        start();
+                    }
 
                     is_first_page = false;
                     if done {

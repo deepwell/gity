@@ -26,7 +26,13 @@ pub fn show_create_dialog(
         return;
     };
     let target_sha = target_sha
-        .or_else(|| ui.repo_view.commit_list.selected_commit_sha())
+        .or_else(|| {
+            // With the uncommitted row selected, fall through to the ref's tip.
+            ui.repo_view
+                .commit_list
+                .selected_commit_sha()
+                .filter(|sha| !git::is_worktree_id(sha))
+        })
         .or_else(|| {
             let current_ref = state.current_ref.borrow().clone()?;
             git::resolve_ref_sha(&path, &current_ref)

@@ -52,18 +52,25 @@ pub fn is_image_path(path: &str) -> bool {
 pub struct ImageDiffSource {
     pub old: Option<Oid>,
     pub new: Option<Oid>,
+    /// When set, the new version is read from this working-tree file
+    /// (relative to the repository root) instead of the object database,
+    /// which does not hold uncommitted content.
+    pub new_worktree_path: Option<String>,
 }
 
 /// One version of the image, shown as a pane.
 struct Side {
     oid: Oid,
+    worktree_path: Option<String>,
     heading: Option<&'static str>,
     css_class: Option<&'static str>,
 }
 
 fn sides(source: &ImageDiffSource) -> Vec<Side> {
-    let side = |oid, heading, css_class| Side {
+    let new_path = || source.new_worktree_path.clone();
+    let side = |oid, worktree_path, heading, css_class| Side {
         oid,
+        worktree_path,
         heading: Some(heading),
         css_class: Some(css_class),
     };
@@ -71,15 +78,16 @@ fn sides(source: &ImageDiffSource) -> Vec<Side> {
         // Renamed or copied without content changes: one unlabeled pane.
         (Some(old), Some(new)) if old == new => vec![Side {
             oid: new,
+            worktree_path: new_path(),
             heading: None,
             css_class: None,
         }],
         (Some(old), Some(new)) => vec![
-            side(old, "Before", "image-diff-before"),
-            side(new, "After", "image-diff-after"),
+            side(old, None, "Before", "image-diff-before"),
+            side(new, new_path(), "After", "image-diff-after"),
         ],
-        (Some(old), None) => vec![side(old, "Deleted", "image-diff-before")],
-        (None, Some(new)) => vec![side(new, "Added", "image-diff-after")],
+        (Some(old), None) => vec![side(old, None, "Deleted", "image-diff-before")],
+        (None, Some(new)) => vec![side(new, new_path(), "Added", "image-diff-after")],
         (None, None) => Vec::new(),
     }
 }
@@ -91,8 +99,12 @@ struct LoadedImage {
 
 type LoadResult = Result<LoadedImage, &'static str>;
 
-fn load_image(repo_path: &Path, oid: Oid) -> LoadResult {
-    let bytes = match git::read_blob(repo_path, oid, MAX_IMAGE_BYTES) {
+fn load_image(repo_path: &Path, oid: Oid, worktree_path: Option<&str>) -> LoadResult {
+    let read = match worktree_path {
+        Some(rel_path) => git::read_worktree_file(repo_path, rel_path, MAX_IMAGE_BYTES),
+        None => git::read_blob(repo_path, oid, MAX_IMAGE_BYTES),
+    };
+    let bytes = match read {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return Err(TOO_LARGE),
         Err(e) => {
@@ -280,7 +292,10 @@ pub fn build(
         panes.push(pane);
     }
 
-    let oids: Vec<Oid> = sides.iter().map(|side| side.oid).collect();
+    let images: Vec<(Oid, Option<String>)> = sides
+        .iter()
+        .map(|side| (side.oid, side.worktree_path.clone()))
+        .collect();
     let repo_path: PathBuf = repo_path.to_path_buf();
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancelled_for_job = cancelled.clone();
@@ -290,9 +305,9 @@ pub fn build(
         if cancelled_for_job.load(Ordering::Relaxed) {
             return;
         }
-        let results: Vec<LoadResult> = oids
+        let results: Vec<LoadResult> = images
             .into_iter()
-            .map(|oid| load_image(&repo_path, oid))
+            .map(|(oid, worktree_path)| load_image(&repo_path, oid, worktree_path.as_deref()))
             .collect();
         let _ = tx.send(results);
     });
@@ -384,18 +399,21 @@ mod tests {
         let both = ImageDiffSource {
             old: Some(oid(1)),
             new: Some(oid(2)),
+            new_worktree_path: None,
         };
         assert_eq!(headings(both), vec![Some("Before"), Some("After")]);
 
         let added = ImageDiffSource {
             old: None,
             new: Some(oid(2)),
+            new_worktree_path: None,
         };
         assert_eq!(headings(added), vec![Some("Added")]);
 
         let deleted = ImageDiffSource {
             old: Some(oid(1)),
             new: None,
+            new_worktree_path: None,
         };
         assert_eq!(headings(deleted), vec![Some("Deleted")]);
     }
@@ -405,6 +423,7 @@ mod tests {
         let renamed = ImageDiffSource {
             old: Some(oid(1)),
             new: Some(oid(1)),
+            new_worktree_path: None,
         };
         assert_eq!(headings(renamed), vec![None]);
     }

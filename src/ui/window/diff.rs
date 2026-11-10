@@ -343,7 +343,8 @@ fn is_mode_only_change(file: &git::FileChange) -> bool {
 }
 
 /// Blob ids to preview when `file` is an image whose content can be shown.
-fn image_source(file: &git::FileChange) -> Option<ImageDiffSource> {
+/// With `worktree`, the new side is read from the working tree.
+fn image_source(file: &git::FileChange, worktree: bool) -> Option<ImageDiffSource> {
     use git::FileChangeKind::*;
     // A mode-only change has nothing visual to compare; it is described as text.
     let previewable = matches!(file.kind, Added | Deleted | Modified | Renamed | Copied)
@@ -353,9 +354,15 @@ fn image_source(file: &git::FileChange) -> Option<ImageDiffSource> {
         .flatten()
         .any(|path| image_diff::is_image_path(path));
     let has_blob = file.old_oid.is_some() || file.new_oid.is_some();
+    let new_worktree_path = if worktree && file.new_oid.is_some() {
+        file.new_path.clone()
+    } else {
+        None
+    };
     (previewable && is_image && has_blob).then_some(ImageDiffSource {
         old: file.old_oid,
         new: file.new_oid,
+        new_worktree_path,
     })
 }
 
@@ -364,7 +371,7 @@ fn sections_from_commit_diff(diff: &git::CommitDiff) -> Vec<DiffSection> {
         .iter()
         .map(|file| {
             let label = file_change_label(file);
-            let image = image_source(file);
+            let image = image_source(file, diff.worktree);
             let text = if is_mode_only_change(file) {
                 // Checked before the patch: for binary files libgit2 still
                 // emits "Binary files … differ" when only the mode changed.
@@ -1228,16 +1235,28 @@ fn load_range_diff(
     // A range selection has no single author; hide the avatar and use the title
     // row for the summary.
     ui.repo_view.diff_avatar_label.set_visible(false);
-    ui.repo_view
-        .commit_title_label
-        .set_text(&format!("{count} commits selected"));
     ui.repo_view.diff_metadata_label.set_text("");
     let short_oldest = oldest_sha.get(..7).unwrap_or(oldest_sha);
-    let short_newest = newest_sha.get(..7).unwrap_or(newest_sha);
-    ui.repo_view
-        .diff_sha_label
-        .set_text(&format!(" {short_oldest}..{short_newest}"));
-    *ui.repo_view.diff_sha_copy_text.borrow_mut() = format!("{oldest_sha}..{newest_sha}");
+    if git::is_worktree_id(newest_sha) {
+        let commits = count - 1;
+        let plural = if commits == 1 { "" } else { "s" };
+        ui.repo_view.commit_title_label.set_text(&format!(
+            "Uncommitted changes and {commits} commit{plural} selected"
+        ));
+        ui.repo_view
+            .diff_sha_label
+            .set_text(&format!(" {short_oldest}..working tree"));
+        *ui.repo_view.diff_sha_copy_text.borrow_mut() = oldest_sha.to_string();
+    } else {
+        let short_newest = newest_sha.get(..7).unwrap_or(newest_sha);
+        ui.repo_view
+            .commit_title_label
+            .set_text(&format!("{count} commits selected"));
+        ui.repo_view
+            .diff_sha_label
+            .set_text(&format!(" {short_oldest}..{short_newest}"));
+        *ui.repo_view.diff_sha_copy_text.borrow_mut() = format!("{oldest_sha}..{newest_sha}");
+    }
     ui.repo_view.diff_sha_row.set_visible(true);
     // A range has no commit body; hide the container so it leaves no empty gap.
     ui.repo_view.commit_message_container.set_visible(false);
@@ -1245,7 +1264,63 @@ fn load_range_diff(
     *ui.repo_view.full_message.borrow_mut() = String::new();
 }
 
+/// Show the working tree's uncommitted changes (staged, unstaged and
+/// untracked) against HEAD.
+fn load_worktree_diff(ui: &WindowUi, state: &AppState) {
+    let Some(ref path) = *state.current_path.borrow() else {
+        return;
+    };
+
+    ui.repo_view.set_diff_chrome_visible(true);
+    set_diff_skeleton(&ui.repo_view.diff_files_box);
+    ui.repo_view.diff_file_tree.clear();
+    ui.repo_view.expand_label.set_visible(false);
+    ui.repo_view.reset_commit_message_expansion();
+    update_expand_collapse_buttons(
+        &ui.repo_view.diff_files_box,
+        &ui.repo_view.diff_expand_all_button,
+        &ui.repo_view.diff_collapse_all_button,
+    );
+
+    let path_clone = path.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(git::get_worktree_diff(path_clone.to_str().unwrap()));
+    });
+    poll_diff_result(
+        rx,
+        path.clone(),
+        ui.repo_view.diff_files_box.clone(),
+        ui.repo_view.diff_file_tree.clone(),
+        ui.repo_view.diff_expand_all_button.clone(),
+        ui.repo_view.diff_collapse_all_button.clone(),
+    );
+
+    // Not a commit: no author, SHA or message body.
+    clear_metadata_skeleton(
+        &ui.repo_view.commit_title_label,
+        &ui.repo_view.diff_metadata_label,
+        &ui.repo_view.diff_avatar_label,
+        &ui.repo_view.commit_message_label,
+    );
+    ui.repo_view.diff_avatar_label.set_visible(false);
+    ui.repo_view
+        .commit_title_label
+        .set_text("Uncommitted changes");
+    ui.repo_view
+        .diff_metadata_label
+        .set_text("Staged, unstaged and untracked changes compared to HEAD");
+    ui.repo_view.diff_sha_row.set_visible(false);
+    ui.repo_view.commit_message_container.set_visible(false);
+    ui.repo_view.commit_message_label.set_text("");
+    *ui.repo_view.full_message.borrow_mut() = String::new();
+}
+
 fn load_commit_diff(ui: &WindowUi, state: &AppState, commit_sha: &str) {
+    if git::is_worktree_id(commit_sha) {
+        load_worktree_diff(ui, state);
+        return;
+    }
     let Some(ref path) = *state.current_path.borrow() else {
         return;
     };
@@ -1503,6 +1578,7 @@ mod tests {
         let diff = CommitDiff {
             preamble: None,
             files,
+            worktree: false,
         };
         sections_from_commit_diff(&diff)
             .into_iter()
@@ -1525,6 +1601,7 @@ mod tests {
         let expected = ImageDiffSource {
             old: Some(oid(1)),
             new: Some(oid(2)),
+            new_worktree_path: None,
         };
         assert_eq!(sections(vec![file]), vec![(String::new(), Some(expected))]);
     }
@@ -1574,6 +1651,7 @@ mod tests {
             Some(ImageDiffSource {
                 old: Some(oid(1)),
                 new: None,
+                new_worktree_path: None,
             })
         );
     }
@@ -1595,6 +1673,32 @@ mod tests {
                 "File mode changed from 100644 to 100755 with no content changes\n".to_string(),
                 None
             )]
+        );
+    }
+
+    #[test]
+    fn worktree_image_reads_new_side_from_working_tree() {
+        let file = change(
+            FileChangeKind::Modified,
+            "logo.png",
+            Some(oid(1)),
+            Some(oid(2)),
+            true,
+            BINARY_PATCH,
+        );
+        let diff = CommitDiff {
+            preamble: None,
+            files: vec![file],
+            worktree: true,
+        };
+        let [section] = sections_from_commit_diff(&diff).try_into().unwrap();
+        assert_eq!(
+            section.image,
+            Some(ImageDiffSource {
+                old: Some(oid(1)),
+                new: Some(oid(2)),
+                new_worktree_path: Some("logo.png".to_string()),
+            })
         );
     }
 

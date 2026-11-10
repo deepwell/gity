@@ -1,7 +1,8 @@
 use chrono::prelude::*;
 use git2::{
     Commit, Delta, Diff, DiffDelta, DiffFile, DiffFindOptions, DiffFormat, DiffLineType,
-    DiffOptions, Error, FileMode, ObjectType, Oid, Pathspec, Repository, Signature, Time,
+    DiffOptions, Error, FileMode, ObjectType, Oid, Pathspec, Repository, Signature, StatusOptions,
+    Time,
 };
 use std::fmt;
 use std::path::Path;
@@ -71,6 +72,9 @@ pub struct CommitDiff {
     /// Optional notice shown above the file list (e.g. merge-commit note).
     pub preamble: Option<String>,
     pub files: Vec<FileChange>,
+    /// The new side is the working tree rather than a commit, so its
+    /// `new_oid`s may not exist in the object database.
+    pub worktree: bool,
 }
 
 fn file_change_kind(status: Delta) -> FileChangeKind {
@@ -162,6 +166,56 @@ fn commit_diff_from_trees(
     Ok(CommitDiff {
         preamble,
         files: collect_file_changes(&mut diff)?,
+        worktree: false,
+    })
+}
+
+/// Diff from `base_tree` (or an empty tree) to the working tree, the way
+/// `git diff <base>` sees it plus untracked files: staged and unstaged
+/// changes are combined.
+fn worktree_diff_from_tree(
+    repo: &Repository,
+    base_tree: Option<&git2::Tree<'_>>,
+) -> Result<CommitDiff, Error> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::from_str("A bare repository has no working tree"))?
+        .to_path_buf();
+
+    let mut diff_opts = DiffOptions::new();
+    diff_opts
+        .context_lines(3)
+        .interhunk_lines(0)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let mut diff = repo.diff_tree_to_workdir_with_index(base_tree, Some(&mut diff_opts))?;
+
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).rename_threshold(50);
+    diff.find_similar(Some(&mut find_opts))?;
+
+    let mut files = collect_file_changes(&mut diff)?;
+    for file in &mut files {
+        // Untracked files are shown with their content, i.e. as new files.
+        if file.kind == FileChangeKind::Untracked {
+            file.kind = FileChangeKind::Added;
+        }
+        // libgit2 only hashes working-tree files it had to compare, so fill
+        // in the rest; image previews and mode-only detection rely on it.
+        let is_file = matches!(file.new_mode, FileMode::Blob | FileMode::BlobExecutable);
+        if file.new_oid.is_none() && is_file && file.kind != FileChangeKind::Deleted {
+            file.new_oid = file
+                .new_path
+                .as_ref()
+                .and_then(|p| Oid::hash_file(ObjectType::Blob, workdir.join(p)).ok());
+        }
+    }
+
+    Ok(CommitDiff {
+        preamble: None,
+        files,
+        worktree: true,
     })
 }
 
@@ -233,6 +287,22 @@ pub struct GitCommit {
     pub author: String,
     pub message: String,
     pub date: String,
+}
+
+impl GitCommit {
+    /// The "Uncommitted changes" entry shown above the newest commit.
+    pub fn worktree_placeholder() -> Self {
+        GitCommit {
+            id: WORKTREE_ID.to_string(),
+            author: String::new(),
+            message: "Uncommitted changes".to_string(),
+            date: String::new(),
+        }
+    }
+
+    pub fn is_worktree(&self) -> bool {
+        is_worktree_id(&self.id)
+    }
 }
 
 impl fmt::Debug for GitCommit {
@@ -795,9 +865,6 @@ pub fn get_range_diff(path: &str, oldest_sha: &str, newest_sha: &str) -> Result<
     let oldest_oid = git2::Oid::from_str(oldest_sha)?;
     let oldest_commit = repo.find_commit(oldest_oid)?;
 
-    let newest_oid = git2::Oid::from_str(newest_sha)?;
-    let newest_commit = repo.find_commit(newest_oid)?;
-
     let base_tree = if oldest_commit.parents().len() >= 1 {
         let parent = oldest_commit.parent(0)?;
         Some(parent.tree()?)
@@ -805,8 +872,87 @@ pub fn get_range_diff(path: &str, oldest_sha: &str, newest_sha: &str) -> Result<
         None
     };
 
+    if is_worktree_id(newest_sha) {
+        return worktree_diff_from_tree(&repo, base_tree.as_ref());
+    }
+
+    let newest_oid = git2::Oid::from_str(newest_sha)?;
+    let newest_commit = repo.find_commit(newest_oid)?;
     let newest_tree = newest_commit.tree()?;
     commit_diff_from_trees(&repo, base_tree.as_ref(), &newest_tree, None)
+}
+
+/// Stand-in commit id for the "uncommitted changes" entry at the top of the
+/// commit list. Not hex, so it can never collide with a real SHA.
+pub const WORKTREE_ID: &str = "worktree";
+
+pub fn is_worktree_id(id: &str) -> bool {
+    id == WORKTREE_ID
+}
+
+/// Whether the commit list for `ref_name` should start with the working
+/// tree's uncommitted changes: `ref_name` is what is checked out, and the
+/// working tree or index differs from it (untracked files included).
+pub fn ref_has_worktree_changes(path: &Path, ref_name: &str) -> bool {
+    let Ok(repo) = Repository::open(path) else {
+        return false;
+    };
+    if repo.is_bare() {
+        return false;
+    }
+    let Ok(head) = repo.head() else {
+        return false;
+    };
+    let checked_out =
+        ref_name == "HEAD" || (head.is_branch() && head.shorthand() == Some(ref_name));
+    if !checked_out {
+        return false;
+    }
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(false)
+        .include_ignored(false);
+    repo.statuses(Some(&mut opts))
+        .map(|statuses| !statuses.is_empty())
+        .unwrap_or(false)
+}
+
+/// Diff of everything not yet committed: HEAD to the working tree,
+/// including staged changes and untracked files.
+pub fn get_worktree_diff(path: &str) -> Result<CommitDiff, Error> {
+    let repo = Repository::open(path)?;
+    let head_tree = match repo.head() {
+        Ok(head) => Some(head.peel_to_tree()?),
+        // Unborn branch: everything is new.
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => None,
+        Err(e) => return Err(e),
+    };
+    worktree_diff_from_tree(&repo, head_tree.as_ref())
+}
+
+/// Reads a working-tree file's contents, or `Ok(None)` when it is larger
+/// than `max_bytes`. `rel_path` is relative to the repository's working tree.
+pub fn read_worktree_file(
+    path: &Path,
+    rel_path: &str,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>, Error> {
+    let repo = Repository::open(path)?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::from_str("A bare repository has no working tree"))?;
+    let full = workdir.join(rel_path);
+    let io_err = |e: std::io::Error| Error::from_str(&e.to_string());
+    // Diff paths are regular files; don't follow a symlink swapped in since.
+    let meta = std::fs::symlink_metadata(&full).map_err(io_err)?;
+    if !meta.is_file() {
+        return Err(Error::from_str("Not a regular file"));
+    }
+    if meta.len() > max_bytes as u64 {
+        return Ok(None);
+    }
+    std::fs::read(&full).map(Some).map_err(io_err)
 }
 
 /// Reads a blob's raw contents. Returns `Ok(None)` when the object is not a
@@ -1800,5 +1946,113 @@ mod tests {
         // Dropping an older entry leaves `refs/stash` itself untouched.
         tr.drop_stash(1);
         assert_changed(&tr, "drop older stash");
+    }
+
+    fn worktree_file<'a>(diff: &'a CommitDiff, path: &str) -> &'a FileChange {
+        diff.files
+            .iter()
+            .find(|f| f.new_path.as_deref() == Some(path))
+            .unwrap_or_else(|| panic!("no change for {path} in {:?}", diff.files))
+    }
+
+    #[test]
+    fn worktree_changes_detected_only_for_checked_out_ref() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.create_branch("other", "main");
+        tr.checkout("main");
+        assert!(!ref_has_worktree_changes(tr.path(), "main"), "clean tree");
+
+        std::fs::write(tr.path().join("a.txt"), "two\n").unwrap();
+        assert!(ref_has_worktree_changes(tr.path(), "main"));
+        assert!(ref_has_worktree_changes(tr.path(), "HEAD"));
+        assert!(!ref_has_worktree_changes(tr.path(), "other"));
+    }
+
+    #[test]
+    fn worktree_changes_include_untracked_files() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.checkout("main");
+        std::fs::write(tr.path().join("new.txt"), "hello\n").unwrap();
+        assert!(ref_has_worktree_changes(tr.path(), "main"));
+    }
+
+    #[test]
+    fn worktree_diff_combines_staged_unstaged_and_untracked() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        tr.commit_file("main", "b.txt", "bee\n", "second");
+        tr.checkout("main");
+
+        // Unstaged edit, staged edit, and a new untracked file in a new dir.
+        std::fs::write(tr.path().join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(tr.path().join("b.txt"), "bee\nstaged\n").unwrap();
+        let mut index = tr.repo().index().unwrap();
+        index.add_path(Path::new("b.txt")).unwrap();
+        index.write().unwrap();
+        std::fs::create_dir(tr.path().join("dir")).unwrap();
+        std::fs::write(tr.path().join("dir/new.txt"), "fresh\n").unwrap();
+
+        let diff = get_worktree_diff(tr.path().to_str().unwrap()).unwrap();
+        assert!(diff.worktree);
+        assert_eq!(diff.files.len(), 3, "got {:?}", diff.files);
+
+        let a = worktree_file(&diff, "a.txt");
+        assert_eq!(a.kind, FileChangeKind::Modified);
+        assert!(a.patch.contains("+two"), "{}", a.patch);
+
+        let b = worktree_file(&diff, "b.txt");
+        assert_eq!(b.kind, FileChangeKind::Modified);
+        assert!(b.patch.contains("+staged"), "{}", b.patch);
+
+        let new = worktree_file(&diff, "dir/new.txt");
+        assert_eq!(new.kind, FileChangeKind::Added);
+        assert!(new.patch.contains("+fresh"), "{}", new.patch);
+        assert_eq!(
+            new.new_oid,
+            Some(Oid::hash_object(ObjectType::Blob, b"fresh\n").unwrap())
+        );
+    }
+
+    #[test]
+    fn range_diff_can_end_at_the_working_tree() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        let second = tr.commit_file("main", "a.txt", "one\ntwo\n", "second");
+        tr.checkout("main");
+        std::fs::write(tr.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+
+        let diff = get_range_diff(
+            tr.path().to_str().unwrap(),
+            &second.to_string(),
+            WORKTREE_ID,
+        )
+        .unwrap();
+        let a = worktree_file(&diff, "a.txt");
+        assert!(
+            a.patch.contains("+two") && a.patch.contains("+three"),
+            "{}",
+            a.patch
+        );
+        assert!(diff.worktree);
+    }
+
+    #[test]
+    fn read_worktree_file_respects_size_limit() {
+        let mut tr = TestRepo::new();
+        tr.commit_file("main", "a.txt", "one\n", "base");
+        std::fs::write(tr.path().join("img.png"), png_bytes(3)).unwrap();
+        let size = png_bytes(3).len();
+
+        assert_eq!(
+            read_worktree_file(tr.path(), "img.png", size).unwrap(),
+            Some(png_bytes(3))
+        );
+        assert_eq!(
+            read_worktree_file(tr.path(), "img.png", size - 1).unwrap(),
+            None
+        );
+        assert!(read_worktree_file(tr.path(), "missing.png", size).is_err());
     }
 }

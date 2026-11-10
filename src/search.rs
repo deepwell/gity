@@ -461,9 +461,11 @@ impl SearchHandler {
         //
         // IMPORTANT: callers must ensure the target index is already present in the store.
         if let Some(&match_index) = matching_indices.get(0) {
-            if match_index < store.n_items() {
-                selection_model.select_item(match_index, true);
-                Self::scroll_to_item(&scrolled_window, &selection_model, match_index);
+            // Matches count commits only; skip the uncommitted row if shown.
+            let row = match_index + crate::ui::commit_list::row_offset(&store);
+            if row < store.n_items() {
+                selection_model.select_item(row, true);
+                Self::scroll_to_item(&scrolled_window, &selection_model, row);
             }
         }
 
