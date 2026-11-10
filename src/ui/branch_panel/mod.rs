@@ -1516,16 +1516,15 @@ fn natural_compare(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Format a datetime as a relative time string (e.g., "2h", "3d", "1mo").
 fn format_time_ago(dt: DateTime<Utc>) -> String {
-    let now = Utc::now();
-    let duration = now.signed_duration_since(dt);
+    format_duration_ago(Utc::now().signed_duration_since(dt))
+}
 
+/// Format an elapsed duration using the largest unit that is at least 1.
+fn format_duration_ago(duration: chrono::Duration) -> String {
     let total_seconds = duration.num_seconds();
     let total_minutes = duration.num_minutes();
     let total_hours = duration.num_hours();
     let total_days = duration.num_days();
-    let total_weeks = total_days / 7;
-    let total_months = total_days / 30;
-    let total_years = total_days / 365;
 
     if total_seconds < 60 {
         "just now".to_string()
@@ -1535,13 +1534,14 @@ fn format_time_ago(dt: DateTime<Utc>) -> String {
         format!("{}h", total_hours)
     } else if total_days < 7 {
         format!("{}d", total_days)
-    } else if total_months == 0 {
-        // Display weeks for < 1 month (includes 28-29 days which would show "0m")
-        format!("{}w", total_weeks)
-    } else if total_months < 12 {
-        format!("{}mo", total_months)
+    } else if total_days < 30 {
+        format!("{}w", total_days / 7)
+    } else if total_days < 365 {
+        // Twelve 30-day months is only 360 days, so days 360-364 are capped
+        // at 11 months instead of rolling over to "12mo" or "0y".
+        format!("{}mo", (total_days / 30).min(11))
     } else {
-        format!("{}y", total_years)
+        format!("{}y", total_days / 365)
     }
 }
 
@@ -1631,6 +1631,57 @@ mod tests {
     fn filter_matches_rejects_refs_without_the_query() {
         assert!(!filter_matches("feature/login", "logout"));
         assert!(!filter_matches("main", "maintenance"));
+    }
+
+    fn ago_days(days: i64) -> String {
+        format_duration_ago(chrono::Duration::days(days))
+    }
+
+    #[test]
+    fn format_duration_ago_uses_small_units_under_a_week() {
+        assert_eq!(
+            format_duration_ago(chrono::Duration::seconds(-5)),
+            "just now"
+        );
+        assert_eq!(
+            format_duration_ago(chrono::Duration::seconds(59)),
+            "just now"
+        );
+        assert_eq!(format_duration_ago(chrono::Duration::seconds(60)), "1m");
+        assert_eq!(format_duration_ago(chrono::Duration::minutes(59)), "59m");
+        assert_eq!(format_duration_ago(chrono::Duration::hours(1)), "1h");
+        assert_eq!(format_duration_ago(chrono::Duration::hours(23)), "23h");
+        assert_eq!(ago_days(1), "1d");
+        assert_eq!(ago_days(6), "6d");
+    }
+
+    #[test]
+    fn format_duration_ago_switches_units_at_each_boundary() {
+        assert_eq!(ago_days(7), "1w");
+        assert_eq!(ago_days(29), "4w");
+        assert_eq!(ago_days(30), "1mo");
+        assert_eq!(ago_days(359), "11mo");
+        assert_eq!(ago_days(365), "1y");
+        assert_eq!(ago_days(729), "1y");
+        assert_eq!(ago_days(730), "2y");
+    }
+
+    #[test]
+    fn format_duration_ago_shows_months_for_the_last_days_before_a_year() {
+        for days in 360..365 {
+            assert_eq!(ago_days(days), "11mo", "{days} days");
+        }
+    }
+
+    #[test]
+    fn format_duration_ago_never_shows_a_zero_count() {
+        for days in 0..=800 {
+            let formatted = ago_days(days);
+            assert!(
+                formatted == "just now" || !formatted.starts_with('0'),
+                "{days} days formatted as {formatted}"
+            );
+        }
     }
 
     #[test]
