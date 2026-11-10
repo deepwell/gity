@@ -1,4 +1,5 @@
 use gtk::{
+    gdk,
     glib::{self},
     prelude::*,
 };
@@ -474,6 +475,41 @@ impl RepoView {
             .build();
         diff_box.append(&diff_body_paned);
 
+        // Page Up/Down and Home/End scroll the diff while keyboard focus is
+        // anywhere in the diff pane. Some widgets would use those keys for
+        // themselves: the per-file text views (without scrolling the diff),
+        // the changed-files list (moving its selection away from the file
+        // just jumped to) and the selectable header labels (moving their text
+        // cursor). Those hand the keys over in the capture phase, before
+        // their own key bindings run. For the rest of the pane this is only a
+        // fallback, so a long expanded commit message still scrolls itself.
+        for widget in [
+            diff_scrolled_window.upcast_ref::<gtk::Widget>(),
+            diff_file_tree.widget.upcast_ref(),
+            diff_header.upcast_ref(),
+        ] {
+            widget.add_controller(diff_scroll_key_controller(
+                &diff_scrolled_window,
+                gtk::PropagationPhase::Capture,
+            ));
+        }
+        diff_box.add_controller(diff_scroll_key_controller(
+            &diff_scrolled_window,
+            gtk::PropagationPhase::Bubble,
+        ));
+        diff_box.add_controller(diff_focus_click_gesture(&diff_scrolled_window));
+        // The expand/collapse buttons are disabled once used, which would
+        // drop keyboard focus from the window altogether. Hand it to the diff
+        // instead, so it can be paged through right away.
+        for button in [&diff_expand_all_button, &diff_collapse_all_button] {
+            let diff_scrolled_window = diff_scrolled_window.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(diff_scrolled_window) = diff_scrolled_window.upgrade() {
+                    diff_scrolled_window.grab_focus();
+                }
+            });
+        }
+
         let gesture = gtk::GestureClick::new();
         gesture.set_button(1);
 
@@ -649,6 +685,82 @@ fn uncap_message_scroller(scrolled: &gtk::ScrolledWindow) {
     scrolled.vadjustment().set_value(0.0);
 }
 
+/// Modifiers that turn the diff scroll keys into a different shortcut, e.g.
+/// Ctrl+Page Down scrolls a file's diff sideways.
+const SCROLL_KEY_MODIFIERS: gdk::ModifierType = gdk::ModifierType::SHIFT_MASK
+    .union(gdk::ModifierType::CONTROL_MASK)
+    .union(gdk::ModifierType::ALT_MASK)
+    .union(gdk::ModifierType::SUPER_MASK)
+    .union(gdk::ModifierType::HYPER_MASK)
+    .union(gdk::ModifierType::META_MASK);
+
+/// The diff scroll requested by a key press: a page for a plain Page Up/Down,
+/// the top or bottom for a plain Home/End.
+fn diff_scroll_for_key(keyval: gdk::Key, state: gdk::ModifierType) -> Option<gtk::ScrollType> {
+    if state.intersects(SCROLL_KEY_MODIFIERS) {
+        return None;
+    }
+    match keyval {
+        gdk::Key::Page_Up | gdk::Key::KP_Page_Up => Some(gtk::ScrollType::PageBackward),
+        gdk::Key::Page_Down | gdk::Key::KP_Page_Down => Some(gtk::ScrollType::PageForward),
+        gdk::Key::Home | gdk::Key::KP_Home => Some(gtk::ScrollType::Start),
+        gdk::Key::End | gdk::Key::KP_End => Some(gtk::ScrollType::End),
+        _ => None,
+    }
+}
+
+/// Key controller that scrolls the diff on Page Up/Down and Home/End.
+fn diff_scroll_key_controller(
+    diff_scrolled_window: &gtk::ScrolledWindow,
+    phase: gtk::PropagationPhase,
+) -> gtk::EventControllerKey {
+    let controller = gtk::EventControllerKey::new();
+    controller.set_propagation_phase(phase);
+    let diff_scrolled_window = diff_scrolled_window.downgrade();
+    controller.connect_key_pressed(move |_, keyval, _, state| {
+        let Some(scroll) = diff_scroll_for_key(keyval, state) else {
+            return glib::Propagation::Proceed;
+        };
+        if let Some(diff_scrolled_window) = diff_scrolled_window.upgrade() {
+            // The scrolled window's own key binding action, so scrolling
+            // looks the same as in every other scrolled area.
+            diff_scrolled_window.emit_scroll_child(scroll, false);
+        }
+        glib::Propagation::Stop
+    });
+    controller
+}
+
+/// Click gesture for the diff pane that moves keyboard focus into the pane.
+///
+/// Most of the pane takes no focus when clicked (line numbers, image previews,
+/// empty space). Focus would then stay in the commit list, where Page Up/Down
+/// change the selected commit instead of scrolling the diff the user clicked.
+fn diff_focus_click_gesture(diff_scrolled_window: &gtk::ScrolledWindow) -> gtk::GestureClick {
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(gdk::BUTTON_PRIMARY);
+    // Capture phase: widgets that handle the click stop it from bubbling up.
+    // Those that take focus themselves still do so afterwards.
+    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let diff_scrolled_window = diff_scrolled_window.downgrade();
+    gesture.connect_pressed(move |gesture, _, _, _| {
+        let Some(pane) = gesture.widget() else {
+            return;
+        };
+        let focus_in_pane = pane
+            .root()
+            .and_then(|root| root.focus())
+            .is_some_and(|focus| focus.is_ancestor(&pane));
+        if focus_in_pane {
+            return;
+        }
+        if let Some(diff_scrolled_window) = diff_scrolled_window.upgrade() {
+            diff_scrolled_window.grab_focus();
+        }
+    });
+    gesture
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,5 +775,81 @@ mod tests {
     fn expanded_message_max_height_leaves_diff_space_on_short_panels() {
         assert_eq!(expanded_message_max_height(200), MIN_MESSAGE_VIEW);
         assert_eq!(expanded_message_max_height(0), MIN_MESSAGE_VIEW);
+    }
+
+    /// Asserts that each key, pressed with `state`, requests `expected`.
+    fn assert_scroll(
+        keys: &[gdk::Key],
+        state: gdk::ModifierType,
+        expected: Option<gtk::ScrollType>,
+    ) {
+        for key in keys {
+            assert_eq!(diff_scroll_for_key(*key, state), expected, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn page_keys_scroll_by_a_page() {
+        let plain = gdk::ModifierType::empty();
+        assert_scroll(
+            &[gdk::Key::Page_Up, gdk::Key::KP_Page_Up],
+            plain,
+            Some(gtk::ScrollType::PageBackward),
+        );
+        assert_scroll(
+            &[gdk::Key::Page_Down, gdk::Key::KP_Page_Down],
+            plain,
+            Some(gtk::ScrollType::PageForward),
+        );
+    }
+
+    #[test]
+    fn home_and_end_scroll_to_the_top_and_bottom() {
+        let plain = gdk::ModifierType::empty();
+        assert_scroll(
+            &[gdk::Key::Home, gdk::Key::KP_Home],
+            plain,
+            Some(gtk::ScrollType::Start),
+        );
+        assert_scroll(
+            &[gdk::Key::End, gdk::Key::KP_End],
+            plain,
+            Some(gtk::ScrollType::End),
+        );
+    }
+
+    #[test]
+    fn scroll_keys_ignore_lock_and_pointer_button_state() {
+        let state = gdk::ModifierType::LOCK_MASK | gdk::ModifierType::BUTTON1_MASK;
+        assert_scroll(
+            &[gdk::Key::Page_Down],
+            state,
+            Some(gtk::ScrollType::PageForward),
+        );
+        assert_scroll(&[gdk::Key::End], state, Some(gtk::ScrollType::End));
+    }
+
+    #[test]
+    fn scroll_keys_with_modifiers_are_left_alone() {
+        let keys = [
+            gdk::Key::Page_Up,
+            gdk::Key::Page_Down,
+            gdk::Key::Home,
+            gdk::Key::End,
+        ];
+        for modifier in [
+            gdk::ModifierType::CONTROL_MASK,
+            gdk::ModifierType::SHIFT_MASK,
+            gdk::ModifierType::ALT_MASK,
+            gdk::ModifierType::SUPER_MASK,
+        ] {
+            assert_scroll(&keys, modifier, None);
+        }
+    }
+
+    #[test]
+    fn other_keys_do_not_scroll_the_diff() {
+        let keys = [gdk::Key::Down, gdk::Key::space, gdk::Key::Return];
+        assert_scroll(&keys, gdk::ModifierType::empty(), None);
     }
 }
