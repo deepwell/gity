@@ -5,12 +5,17 @@
 //! allows single-selection. All sections are collapsible with state persisted
 //! to gsettings. A filter bar (hidden until requested) narrows every section
 //! to the refs matching the typed text.
+//!
+//! The panel is one `gtk::ListView` over a `gtk::TreeListModel`: each section,
+//! and each remote within Remotes, is an expandable header row whose children
+//! are its refs. Only rows scrolled into view get widgets, so a repository
+//! with hundreds of tags opens as quickly as one with a handful.
 
 use chrono::{DateTime, Utc};
-use gtk::{gio, prelude::*};
-use std::cell::RefCell;
+use gtk::{gio, glib, prelude::*};
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::APP_ID;
 use crate::git::{BranchInfo, StashInfo, TagInfo};
@@ -34,10 +39,114 @@ pub enum RefAction {
 }
 
 /// Information about the currently selected reference.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectedRef {
     name: String,
     ref_type: RefType,
+}
+
+/// A top-level section of the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Branches,
+    Tags,
+    Stashes,
+    Remotes,
+}
+
+impl Section {
+    /// Every section, in display order.
+    const ALL: [Section; 4] = [
+        Section::Branches,
+        Section::Tags,
+        Section::Stashes,
+        Section::Remotes,
+    ];
+
+    fn title(self) -> &'static str {
+        match self {
+            Section::Branches => "Branches",
+            Section::Tags => "Tags",
+            Section::Stashes => "Stashes",
+            Section::Remotes => "Remotes",
+        }
+    }
+
+    /// The gsettings key that persists whether the section is expanded.
+    fn settings_key(self) -> &'static str {
+        match self {
+            Section::Branches => "branches-expanded",
+            Section::Tags => "tags-expanded",
+            Section::Stashes => "stashes-expanded",
+            Section::Remotes => "remotes-expanded",
+        }
+    }
+
+    /// Singular and plural nouns for the header's count tooltip.
+    fn count_nouns(self) -> (&'static str, &'static str) {
+        match self {
+            Section::Branches => ("branch", "branches"),
+            Section::Tags => ("tag", "tags"),
+            Section::Stashes => ("stash", "stashes"),
+            Section::Remotes => ("remote", "remotes"),
+        }
+    }
+
+    /// Tooltip and action of the header's "+" button, if it has one.
+    fn create_button(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Section::Branches => Some(("New Branch", "refs.new-branch")),
+            Section::Tags => Some(("New Tag", "refs.new-tag")),
+            Section::Stashes | Section::Remotes => None,
+        }
+    }
+}
+
+/// What a header row heads: a top-level section or one remote in Remotes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HeaderKind {
+    Section(Section),
+    Remote(String),
+}
+
+/// Everything a ref row displays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RefEntry {
+    info: SelectedRef,
+    /// Row text: the ref name, a remote branch without its remote, or a
+    /// stash's message.
+    label: String,
+    tooltip: String,
+    time_ago: String,
+    /// Shows the checkmark (the checked-out local branch).
+    checked_out: bool,
+    /// The text the filter matches against.
+    filter_text: String,
+}
+
+/// An item of the panel's tree model.
+enum PanelItem {
+    /// An expandable header. `children` are its rows with the panel filter
+    /// applied; the unfiltered rows are `children.model()`.
+    Header {
+        kind: HeaderKind,
+        children: gtk::FilterListModel,
+    },
+    Ref(RefEntry),
+}
+
+/// Indent of a remote's header and branches inside the Remotes section.
+const REMOTE_INDENT: i32 = 8;
+/// Widget names that tell the two kinds of row widget apart on recycling.
+const HEADER_ROW: &str = "header-row";
+const REF_ROW: &str = "ref-row";
+
+/// One section's rows: all of them, and those passing the filter.
+struct SectionModel {
+    section: Section,
+    /// Ref items, or (for Remotes) one header item per remote.
+    store: gio::ListStore,
+    filtered: gtk::FilterListModel,
 }
 
 /// A panel widget that displays local branches, tags, and remote-tracking branches.
@@ -46,7 +155,7 @@ struct SelectedRef {
 /// - **Branches** — local branches with a checkmark on the checked-out branch
 /// - **Tags**
 /// - **Stashes** — hidden when the repository has no stashes
-/// - **Remotes** — grouped by remote name (e.g. `origin`), each with its own expander
+/// - **Remotes** — grouped by remote name (e.g. `origin`), each collapsible
 ///
 /// Branches are sorted with "main" or "master" first, then by latest commit time.
 /// Tags are sorted alphabetically using natural sort order.
@@ -59,47 +168,52 @@ struct SelectedRef {
 pub struct BranchPanel {
     /// The root widget container
     pub widget: gtk::Box,
+    inner: Rc<Inner>,
+}
+
+struct Inner {
+    /// The root widget container (also hosts the context menu popover)
+    widget: gtk::Box,
     /// The search bar holding the filter entry (hidden until `show_filter`)
     filter_bar: gtk::SearchBar,
     /// The entry whose text filters the ref rows
     filter_entry: gtk::SearchEntry,
-    /// Lowercased filter text, shared with each list box's filter function
+    /// Lowercased filter text, shared with the model filters
     filter_query: Rc<RefCell<String>>,
     /// Shown instead of the sections when the filter matches no refs
     no_matches_label: gtk::Label,
-    /// The list box containing branch rows
-    branches_list_box: gtk::ListBox,
-    /// The list box containing tag rows
-    tags_list_box: gtk::ListBox,
-    /// The list box containing stash rows
-    stashes_list_box: gtk::ListBox,
-    /// Container for per-remote expanders inside the Remotes section
-    remotes_content_box: gtk::Box,
-    /// List boxes for remote branch rows (one per remote, rebuilt on refresh)
-    remote_list_boxes: Rc<RefCell<Vec<gtk::ListBox>>>,
-    /// The expander for branches section
-    branches_expander: gtk::Expander,
-    /// The expander for tags section
-    tags_expander: gtk::Expander,
-    /// The expander for stashes section (hidden when there are no stashes)
-    stashes_expander: gtk::Expander,
-    /// The expander for remotes section
-    remotes_expander: gtk::Expander,
-    /// Section labels used to show ref counts on hover
-    branches_label: gtk::Label,
-    tags_label: gtk::Label,
-    stashes_label: gtk::Label,
-    remotes_label: gtk::Label,
+    list_view: gtk::ListView,
+    selection: gtk::SingleSelection,
+    /// Headers and the rows of expanded headers, flattened for the list view
+    tree: gtk::TreeListModel,
+    /// Hides empty sections (always Stashes; any of them while filtering)
+    section_filter: gtk::CustomFilter,
+    /// Hides remotes without matching branches while filtering
+    remote_filter: gtk::CustomFilter,
+    /// Hides refs that don't match the filter text
+    ref_filter: gtk::CustomFilter,
+    /// Per-section models, in display order
+    sections: Vec<SectionModel>,
     /// Handler invoked when a ref row is activated (set via `on_ref_selected`)
-    activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
+    activate_handler: RefCell<Option<Rc<dyn Fn(&str, RefType)>>>,
     /// Handler invoked for create/delete requests (set via `on_ref_action`)
     ref_action_handler: Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>>,
     /// Name of the checked-out branch, which can't be deleted
-    checked_out_branch: Rc<RefCell<Option<String>>>,
-    /// Currently selected reference (name and type)
-    selected_ref: Rc<RefCell<Option<SelectedRef>>>,
+    checked_out_branch: RefCell<Option<String>>,
+    /// The selected ref. It stays selected while its row is hidden (in a
+    /// collapsed section or filtered out) and is reselected when it shows.
+    selected_ref: RefCell<Option<SelectedRef>>,
+    /// The ref whose context menu is open
+    context_ref: Rc<RefCell<Option<SelectedRef>>>,
+    delete_action: gio::SimpleAction,
+    context_popover: gtk::PopoverMenu,
+    ref_menu: gio::Menu,
+    stash_menu: gio::Menu,
     /// GSettings for persisting expanded state
     settings: gio::Settings,
+    /// Set while the models are being changed in several steps; the
+    /// selection is synced once at the end (see `batch`).
+    batching: Cell<bool>,
 }
 
 impl BranchPanel {
@@ -108,26 +222,129 @@ impl BranchPanel {
     /// # Arguments
     /// * `branches` - Slice of branch information to display
     pub fn new(branches: &[BranchInfo]) -> Self {
-        Self::new_with_refs(branches, &[], &[], &[], None, None)
+        let inner = Rc::new_cyclic(|weak| Inner::new(weak.clone()));
+        inner.connect_signals();
+        let panel = Self {
+            widget: inner.widget.clone(),
+            inner,
+        };
+        panel.update_refs(branches, &[], &[], &[], None, None);
+        panel
     }
 
-    /// Create a new BranchPanel with branches, remote branches, tags, and indication of current state.
+    /// Update the panel with new lists of branches, remote branches, tags, and stashes.
     ///
-    /// # Arguments
-    /// * `branches` - Slice of local branch information to display
-    /// * `remote_branches` - Slice of remote-tracking branch information to display
-    /// * `tags` - Slice of tag information to display
-    /// * `stashes` - Slice of stash entries to display
-    /// * `checked_out_branch` - Name of the currently checked out branch (if any)
-    /// * `current_ref_name` - Name of the currently viewed ref (branch or tag)
-    pub fn new_with_refs(
+    /// Attempts to preserve the current selection if possible.
+    pub fn update_refs(
+        &self,
         branches: &[BranchInfo],
         remote_branches: &[BranchInfo],
         tags: &[TagInfo],
         stashes: &[StashInfo],
         checked_out_branch: Option<&str>,
         current_ref_name: Option<&str>,
-    ) -> Self {
+    ) {
+        let inner = &self.inner;
+        let preserved = inner.selected_ref.borrow().clone();
+
+        inner.batch(|| {
+            *inner.checked_out_branch.borrow_mut() = checked_out_branch.map(String::from);
+
+            replace_items(
+                &inner.section(Section::Branches).store,
+                sort_branches(branches)
+                    .iter()
+                    .map(|b| PanelItem::Ref(branch_entry(b, checked_out_branch))),
+            );
+            replace_items(
+                &inner.section(Section::Tags).store,
+                sort_tags(tags).iter().map(|t| PanelItem::Ref(tag_entry(t))),
+            );
+            replace_items(
+                &inner.section(Section::Stashes).store,
+                stashes.iter().map(|s| PanelItem::Ref(stash_entry(s))),
+            );
+            replace_items(
+                &inner.section(Section::Remotes).store,
+                group_remote_branches(remote_branches)
+                    .into_iter()
+                    .map(|(remote, branches)| {
+                        let store = gio::ListStore::new::<glib::BoxedAnyObject>();
+                        replace_items(
+                            &store,
+                            branches.iter().map(|b| PanelItem::Ref(remote_entry(b))),
+                        );
+                        PanelItem::Header {
+                            kind: HeaderKind::Remote(remote),
+                            children: gtk::FilterListModel::new(
+                                Some(store),
+                                Some(inner.ref_filter.clone()),
+                            ),
+                        }
+                    }),
+            );
+
+            if let Some(ref_info) = preserved {
+                inner.select_ref(&ref_info.name);
+            } else if let Some(name) = current_ref_name {
+                inner.select_ref(name);
+            } else if let Some(name) = checked_out_branch {
+                inner.select_ref(name);
+            }
+            inner.ensure_default_selection();
+
+            // The rows changed, so section visibility must be recomputed.
+            inner.apply_filter();
+        });
+    }
+
+    /// Reveal the filter bar and focus its entry.
+    pub fn show_filter(&self) {
+        self.inner.filter_bar.set_search_mode(true);
+        self.inner.filter_entry.grab_focus();
+    }
+
+    /// Hide the filter bar and list every ref again.
+    pub fn hide_filter(&self) {
+        self.inner.filter_bar.set_search_mode(false);
+    }
+
+    /// Whether keyboard focus is in the filter entry.
+    pub fn filter_has_focus(&self) -> bool {
+        self.inner
+            .filter_entry
+            .state_flags()
+            .contains(gtk::StateFlags::FOCUS_WITHIN)
+    }
+
+    /// Select a ref by name.
+    ///
+    /// # Arguments
+    /// * `ref_name` - Name of the branch, remote branch, tag, or stash to select
+    ///
+    /// # Returns
+    /// `true` if the ref was found and selected, `false` otherwise.
+    pub fn select_ref(&self, ref_name: &str) -> bool {
+        self.inner.select_ref(ref_name)
+    }
+
+    /// Register a callback for when a ref is selected (activated).
+    ///
+    /// # Arguments
+    /// * `callback` - Function called with the ref name and type when activated
+    pub fn on_ref_selected<F: Fn(&str, RefType) + Clone + 'static>(&self, callback: F) {
+        *self.inner.activate_handler.borrow_mut() = Some(Rc::new(callback));
+    }
+
+    /// Register a callback for create and delete requests from the header
+    /// buttons and row context menus.
+    pub fn on_ref_action<F: Fn(RefAction) + 'static>(&self, callback: F) {
+        *self.inner.ref_action_handler.borrow_mut() = Some(Rc::new(callback));
+    }
+}
+
+impl Inner {
+    fn new(weak: Weak<Inner>) -> Self {
         let settings = gio::Settings::new(APP_ID);
 
         let side_panel = gtk::Box::builder()
@@ -147,14 +364,6 @@ impl BranchPanel {
         side_panel.append(&filter_bar);
         let filter_query = Rc::new(RefCell::new(String::new()));
 
-        // Create a scrolled window for the content
-        let scrolled = gtk::ScrolledWindow::builder().vexpand(true).build();
-
-        // Create container for expanders
-        let content_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .build();
-
         let no_matches_label = gtk::Label::builder()
             .label("No matching branches, tags, or stashes")
             .wrap(true)
@@ -165,130 +374,115 @@ impl BranchPanel {
             .visible(false)
             .build();
         no_matches_label.add_css_class("dim-label");
-        content_box.append(&no_matches_label);
+        side_panel.append(&no_matches_label);
 
-        // Create branches section
-        let branches_expander = gtk::Expander::builder()
-            .expanded(settings.boolean("branches-expanded"))
+        // Filters, innermost first: a header's visibility depends on how many
+        // of its rows pass the filters below it.
+        let ref_filter = {
+            let query = filter_query.clone();
+            gtk::CustomFilter::new(move |obj| {
+                let query = query.borrow();
+                query.is_empty()
+                    || with_item(obj, |item| {
+                        matches!(item, PanelItem::Ref(entry) if filter_matches(&entry.filter_text, &query))
+                    })
+                    .unwrap_or(false)
+            })
+        };
+        let remote_filter = {
+            let query = filter_query.clone();
+            gtk::CustomFilter::new(move |obj| {
+                query.borrow().is_empty()
+                    || header_children(obj).is_some_and(|children| children.n_items() > 0)
+            })
+        };
+        let section_filter = {
+            let query = filter_query.clone();
+            gtk::CustomFilter::new(move |obj| {
+                let filtering = !query.borrow().is_empty();
+                with_item(obj, |item| match item {
+                    PanelItem::Header { kind, children } => {
+                        let matched = children.n_items() > 0;
+                        // Stashes is hidden whenever it is empty, the other
+                        // sections only while filtering.
+                        matched || !(filtering || *kind == HeaderKind::Section(Section::Stashes))
+                    }
+                    PanelItem::Ref(_) => true,
+                })
+                .unwrap_or(true)
+            })
+        };
+
+        let sections: Vec<SectionModel> = Section::ALL
+            .into_iter()
+            .map(|section| {
+                let store = gio::ListStore::new::<glib::BoxedAnyObject>();
+                let filter = if section == Section::Remotes {
+                    &remote_filter
+                } else {
+                    &ref_filter
+                };
+                let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+                SectionModel {
+                    section,
+                    store,
+                    filtered,
+                }
+            })
+            .collect();
+
+        let section_store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        for model in &sections {
+            section_store.append(&glib::BoxedAnyObject::new(PanelItem::Header {
+                kind: HeaderKind::Section(model.section),
+                children: model.filtered.clone(),
+            }));
+        }
+        let visible_sections =
+            gtk::FilterListModel::new(Some(section_store), Some(section_filter.clone()));
+
+        // New rows start expanded, so a remote that appears on refresh is
+        // open; `apply_filter` sets each section's saved state.
+        let tree = gtk::TreeListModel::new(visible_sections, false, true, |obj| {
+            header_children(obj).map(|children| children.upcast())
+        });
+        let selection = gtk::SingleSelection::new(Some(tree.clone()));
+        selection.set_autoselect(false);
+        selection.set_can_unselect(true);
+
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_bind(move |_, obj| {
+            if let (Some(panel), Some(list_item)) = (weak.upgrade(), obj.downcast_ref()) {
+                panel.bind_list_item(list_item);
+            }
+        });
+        factory.connect_unbind(|_, obj| {
+            let header = obj
+                .downcast_ref::<gtk::ListItem>()
+                .and_then(|list_item| list_item.child())
+                .filter(|child| child.widget_name() == HEADER_ROW);
+            if let Some(expander) = header
+                .and_then(|header| header.first_child())
+                .and_downcast::<gtk::TreeExpander>()
+            {
+                expander.set_list_row(None);
+            }
+        });
+
+        let list_view = gtk::ListView::new(Some(selection.clone()), Some(factory));
+        list_view.add_css_class("branch-panel-list");
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&list_view)
             .build();
-        branches_expander.add_css_class("branch-panel-expander");
-
-        let branches_label = gtk::Label::builder()
-            .label("Branches")
-            .halign(gtk::Align::Start)
-            .build();
-        branches_label.add_css_class("heading");
-        let branches_label_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .build();
-        branches_label_box.add_css_class("branch-panel-expander-label");
-        branches_label_box.append(&branches_label);
-        append_header_button(&branches_label_box, "New Branch", "refs.new-branch");
-        branches_expander.set_label_widget(Some(&branches_label_box));
-        set_expander_chevron_margin(&branches_expander, 10);
-
-        let branches_list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .build();
-
-        set_ref_filter_func(&branches_list_box, &filter_query);
-
-        branches_expander.set_child(Some(&branches_list_box));
-        content_box.append(&branches_expander);
-
-        // Create tags section
-        let tags_expander = gtk::Expander::builder()
-            .expanded(settings.boolean("tags-expanded"))
-            .build();
-        tags_expander.add_css_class("branch-panel-expander");
-
-        let tags_label = gtk::Label::builder()
-            .label("Tags")
-            .halign(gtk::Align::Start)
-            .build();
-        tags_label.add_css_class("heading");
-        let tags_label_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .build();
-        tags_label_box.add_css_class("branch-panel-expander-label");
-        tags_label_box.append(&tags_label);
-        append_header_button(&tags_label_box, "New Tag", "refs.new-tag");
-        tags_expander.set_label_widget(Some(&tags_label_box));
-        set_expander_chevron_margin(&tags_expander, 10);
-
-        let tags_list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .build();
-
-        set_ref_filter_func(&tags_list_box, &filter_query);
-
-        tags_expander.set_child(Some(&tags_list_box));
-        content_box.append(&tags_expander);
-
-        // Create stashes section
-        let stashes_expander = gtk::Expander::builder()
-            .expanded(settings.boolean("stashes-expanded"))
-            .build();
-        stashes_expander.add_css_class("branch-panel-expander");
-
-        let stashes_label = gtk::Label::builder()
-            .label("Stashes")
-            .halign(gtk::Align::Start)
-            .build();
-        stashes_label.add_css_class("heading");
-        let stashes_label_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .build();
-        stashes_label_box.add_css_class("branch-panel-expander-label");
-        stashes_label_box.append(&stashes_label);
-        stashes_expander.set_label_widget(Some(&stashes_label_box));
-        set_expander_chevron_margin(&stashes_expander, 10);
-
-        let stashes_list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .build();
-
-        set_ref_filter_func(&stashes_list_box, &filter_query);
-
-        stashes_expander.set_child(Some(&stashes_list_box));
-        content_box.append(&stashes_expander);
-
-        // Create remotes section (after branches and tags)
-        let remotes_expander = gtk::Expander::builder()
-            .expanded(settings.boolean("remotes-expanded"))
-            .build();
-        remotes_expander.add_css_class("branch-panel-expander");
-
-        let remotes_label = gtk::Label::builder()
-            .label("Remotes")
-            .halign(gtk::Align::Start)
-            .build();
-        remotes_label.add_css_class("heading");
-        let remotes_label_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .build();
-        remotes_label_box.add_css_class("branch-panel-expander-label");
-        remotes_label_box.append(&remotes_label);
-        remotes_expander.set_label_widget(Some(&remotes_label_box));
-        set_expander_chevron_margin(&remotes_expander, 10);
-
-        let remotes_content_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .build();
-
-        remotes_expander.set_child(Some(&remotes_content_box));
-        content_box.append(&remotes_expander);
-
-        let remote_list_boxes = Rc::new(RefCell::new(Vec::new()));
-        let activate_handler: Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>> =
-            Rc::new(RefCell::new(None));
-        let selected_ref = Rc::new(RefCell::new(None));
-        let ref_action_handler: Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>> =
-            Rc::new(RefCell::new(None));
-        let checked_out_branch_name = Rc::new(RefCell::new(checked_out_branch.map(String::from)));
+        side_panel.append(&scrolled);
+        side_panel.set_vexpand(true);
 
         // Create/delete actions, shared by the header buttons and the row
         // context menus. Remote branches have no menu.
+        let ref_action_handler: Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>> =
+            Rc::new(RefCell::new(None));
         let context_ref = Rc::new(RefCell::new(None));
         let delete_action = install_ref_actions(&side_panel, &ref_action_handler, &context_ref);
         let ref_menu = gio::Menu::new();
@@ -301,225 +495,150 @@ impl BranchPanel {
         ref_menu.append_section(None, &delete_section);
         let stash_menu = gio::Menu::new();
         stash_menu.append(Some("Delete…"), Some("refs.delete"));
-        // One popover for all sections, parented to the panel's root box.
-        // A list box can't hold it: it may only contain rows.
+        // One popover for every row, parented to the panel's root box.
         let context_popover = gtk::PopoverMenu::from_model(None::<&gio::MenuModel>);
         context_popover.set_parent(&side_panel);
         context_popover.set_has_arrow(true);
-        for (list_box, menu) in [
-            (&branches_list_box, &ref_menu),
-            (&tags_list_box, &ref_menu),
-            (&stashes_list_box, &stash_menu),
-        ] {
-            attach_context_menu(
-                list_box,
-                menu,
-                &context_popover,
-                &context_ref,
-                &checked_out_branch_name,
-                &delete_action,
-            );
-        }
 
-        scrolled.set_child(Some(&content_box));
-        side_panel.append(&scrolled);
-        side_panel.set_vexpand(true);
-
-        populate_branches_list(&branches_list_box, branches, checked_out_branch);
-        populate_tags_list(&tags_list_box, tags);
-        populate_stashes_list(&stashes_expander, &stashes_list_box, stashes);
-        populate_remotes_section(
-            &remotes_content_box,
-            &remote_list_boxes,
-            &[&branches_list_box, &tags_list_box, &stashes_list_box],
-            &selected_ref,
-            &activate_handler,
-            &filter_query,
-            remote_branches,
-        );
-        set_section_count_tooltips(
-            &branches_label,
-            &tags_label,
-            &stashes_label,
-            &remotes_label,
-            branches,
-            remote_branches,
-            tags,
-            stashes,
-        );
-
-        // Wire up settings persistence for expanded state. Filtering expands
-        // every section temporarily, which must not overwrite the saved state.
-        for (expander, key) in [
-            (&branches_expander, "branches-expanded"),
-            (&tags_expander, "tags-expanded"),
-            (&stashes_expander, "stashes-expanded"),
-            (&remotes_expander, "remotes-expanded"),
-        ] {
-            let settings = settings.clone();
-            let filter_query = filter_query.clone();
-            expander.connect_expanded_notify(move |exp| {
-                if filter_query.borrow().is_empty() {
-                    let _ = settings.set_boolean(key, exp.is_expanded());
-                }
-            });
-        }
-
-        wire_local_list_selection(
-            &[&branches_list_box, &tags_list_box, &stashes_list_box],
-            &remote_list_boxes,
-            &selected_ref,
-        );
-
-        let panel = Self {
+        Self {
             widget: side_panel,
             filter_bar,
             filter_entry,
             filter_query,
             no_matches_label,
-            branches_list_box,
-            tags_list_box,
-            stashes_list_box,
-            remotes_content_box,
-            remote_list_boxes,
-            branches_expander,
-            tags_expander,
-            stashes_expander,
-            remotes_expander,
-            branches_label,
-            tags_label,
-            stashes_label,
-            remotes_label,
-            activate_handler,
+            list_view,
+            selection,
+            tree,
+            section_filter,
+            remote_filter,
+            ref_filter,
+            sections,
+            activate_handler: RefCell::new(None),
             ref_action_handler,
-            checked_out_branch: checked_out_branch_name,
-            selected_ref,
+            checked_out_branch: RefCell::new(None),
+            selected_ref: RefCell::new(None),
+            context_ref,
+            delete_action,
+            context_popover,
+            ref_menu,
+            stash_menu,
             settings,
-        };
+            batching: Cell::new(false),
+        }
+    }
 
-        let panel_for_changed = panel.clone();
-        panel
-            .filter_entry
-            .connect_search_changed(move |_| panel_for_changed.apply_filter());
+    fn connect_signals(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.filter_entry.connect_search_changed(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.apply_filter();
+            }
+        });
 
         // Enter jumps to the first matching ref.
-        let panel_for_activate = panel.clone();
-        panel
-            .filter_entry
-            .connect_activate(move |_| panel_for_activate.activate_first_match());
+        let weak = Rc::downgrade(self);
+        self.filter_entry.connect_activate(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.activate_first_match();
+            }
+        });
 
         // Closing the bar drops the filter so every ref is listed again.
-        let panel_for_close = panel.clone();
-        panel
-            .filter_bar
+        let weak = Rc::downgrade(self);
+        self.filter_bar
             .connect_search_mode_enabled_notify(move |bar| {
-                if !bar.is_search_mode() {
-                    panel_for_close.filter_entry.set_text("");
-                    panel_for_close.apply_filter();
+                if let Some(panel) = weak.upgrade().filter(|_| !bar.is_search_mode()) {
+                    panel.filter_entry.set_text("");
+                    panel.apply_filter();
                 }
             });
 
-        // Default selection: prefer current ref, then checked-out branch, then "main", then first branch.
-        if let Some(name) = current_ref_name {
-            let _ = panel.select_ref(name);
-        } else if let Some(name) = checked_out_branch {
-            let _ = panel.select_ref(name);
-        }
-        panel.ensure_default_selection();
-        panel
+        // Rows come and go as sections expand, collapse and filter; keep the
+        // selected ref's row selected whenever it is listed.
+        let weak = Rc::downgrade(self);
+        self.selection.connect_items_changed(move |_, _, _, _| {
+            if let Some(panel) = weak.upgrade() {
+                panel.sync_selection();
+            }
+        });
+
+        // Moving the selection with the keyboard selects that ref without
+        // switching to it; activating it (click or Enter) switches.
+        let weak = Rc::downgrade(self);
+        self.selection
+            .connect_selection_changed(move |selection, _, _| {
+                let Some(panel) = weak.upgrade().filter(|panel| !panel.batching.get()) else {
+                    return;
+                };
+                if let Some(ref_info) = selection.selected_item().and_then(|row| ref_info(&row)) {
+                    *panel.selected_ref.borrow_mut() = Some(ref_info);
+                }
+            });
+
+        // Enter on a ref row, or a double click: switch to the ref. A single
+        // click is handled by the row's own gesture.
+        let weak = Rc::downgrade(self);
+        self.list_view.connect_activate(move |_, position| {
+            let Some(panel) = weak.upgrade() else { return };
+            if let Some(row) = panel.tree.item(position).and_downcast::<gtk::TreeListRow>() {
+                panel.activate_row(&row);
+            }
+        });
+
+        // Enter or Space on a focused header expands or collapses it. The list
+        // row consumes these keys even when it isn't activatable, so look at
+        // them in the capture phase, before the row does.
+        let weak = Rc::downgrade(self);
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        keys.connect_key_pressed(move |_, key, _, _| {
+            use gtk::gdk::Key;
+            let toggle_key = matches!(
+                key,
+                Key::Return | Key::KP_Enter | Key::ISO_Enter | Key::space | Key::KP_Space
+            );
+            let header_row = weak
+                .upgrade()
+                .filter(|_| toggle_key)
+                .and_then(|panel| Some((panel.focused_header_row()?, panel)));
+            match header_row {
+                Some((row, panel)) => {
+                    panel.toggle_header(&row);
+                    glib::Propagation::Stop
+                }
+                None => glib::Propagation::Proceed,
+            }
+        });
+        self.list_view.add_controller(keys);
     }
 
-    /// Update the panel with new lists of branches, remote branches, tags, and stashes.
-    ///
-    /// Attempts to preserve the current selection if possible.
-    pub fn update_refs(
-        &self,
-        branches: &[BranchInfo],
-        remote_branches: &[BranchInfo],
-        tags: &[TagInfo],
-        stashes: &[StashInfo],
-        checked_out_branch: Option<&str>,
-        current_ref_name: Option<&str>,
-    ) {
-        // Preserve the last selected ref (or current selected row if present).
-        let preserved = self
-            .selected_ref
-            .borrow()
-            .clone()
-            .or_else(|| self.selected_row_ref_info());
-
-        while let Some(row) = self.branches_list_box.row_at_index(0) {
-            self.branches_list_box.remove(&row);
-        }
-
-        while let Some(row) = self.tags_list_box.row_at_index(0) {
-            self.tags_list_box.remove(&row);
-        }
-
-        while let Some(row) = self.stashes_list_box.row_at_index(0) {
-            self.stashes_list_box.remove(&row);
-        }
-
-        clear_remotes_section(&self.remotes_content_box, &self.remote_list_boxes);
-
-        *self.checked_out_branch.borrow_mut() = checked_out_branch.map(String::from);
-
-        populate_branches_list(&self.branches_list_box, branches, checked_out_branch);
-        populate_tags_list(&self.tags_list_box, tags);
-        populate_stashes_list(&self.stashes_expander, &self.stashes_list_box, stashes);
-        populate_remotes_section(
-            &self.remotes_content_box,
-            &self.remote_list_boxes,
-            &[
-                &self.branches_list_box,
-                &self.tags_list_box,
-                &self.stashes_list_box,
-            ],
-            &self.selected_ref,
-            &self.activate_handler,
-            &self.filter_query,
-            remote_branches,
-        );
-        set_section_count_tooltips(
-            &self.branches_label,
-            &self.tags_label,
-            &self.stashes_label,
-            &self.remotes_label,
-            branches,
-            remote_branches,
-            tags,
-            stashes,
-        );
-
-        if let Some(ref_info) = preserved {
-            let _ = self.select_ref(&ref_info.name);
-        } else if let Some(name) = current_ref_name {
-            let _ = self.select_ref(name);
-        } else if let Some(name) = checked_out_branch {
-            let _ = self.select_ref(name);
-        }
-        self.ensure_default_selection();
-
-        // The rows were rebuilt, so section visibility must be recomputed.
-        self.apply_filter();
+    /// The tree row of the header that has keyboard focus, if any.
+    fn focused_header_row(&self) -> Option<gtk::TreeListRow> {
+        self.list_view
+            .focus_child()?
+            .first_child()
+            .filter(|child| child.widget_name() == HEADER_ROW)?
+            .first_child()
+            .and_downcast::<gtk::TreeExpander>()?
+            .list_row()
     }
 
-    /// Reveal the filter bar and focus its entry.
-    pub fn show_filter(&self) {
-        self.filter_bar.set_search_mode(true);
-        self.filter_entry.grab_focus();
+    fn section(&self, section: Section) -> &SectionModel {
+        self.sections
+            .iter()
+            .find(|model| model.section == section)
+            .expect("every section has a model")
     }
 
-    /// Hide the filter bar and list every ref again.
-    pub fn hide_filter(&self) {
-        self.filter_bar.set_search_mode(false);
-    }
-
-    /// Whether keyboard focus is in the filter entry.
-    pub fn filter_has_focus(&self) -> bool {
-        self.filter_entry
-            .state_flags()
-            .contains(gtk::StateFlags::FOCUS_WITHIN)
+    /// Run `f` with selection syncing paused, then sync once.
+    fn batch<R>(&self, f: impl FnOnce() -> R) -> R {
+        let was_batching = self.batching.replace(true);
+        let result = f();
+        self.batching.set(was_batching);
+        if !was_batching {
+            self.sync_selection();
+        }
+        result
     }
 
     /// Apply the filter entry's text to every section.
@@ -529,221 +648,283 @@ impl BranchPanel {
     fn apply_filter(&self) {
         let query = self.filter_entry.text().trim().to_lowercase();
         let filtering = !query.is_empty();
-        *self.filter_query.borrow_mut() = query.clone();
+        *self.filter_query.borrow_mut() = query;
 
-        // Re-run the row filter, then report whether any row is still listed.
-        let refilter = |list_box: &gtk::ListBox| {
-            list_box.invalidate_filter();
-            list_box_rows(list_box).any(|row| row_matches_filter(&row, &query))
-        };
+        self.batch(|| {
+            self.ref_filter.changed(gtk::FilterChange::Different);
+            self.remote_filter.changed(gtk::FilterChange::Different);
+            self.section_filter.changed(gtk::FilterChange::Different);
 
-        // The stashes section is the only one hidden when it has no rows at all.
-        let mut any_match = false;
-        for (expander, key, list_box, hide_when_empty) in [
-            (
-                &self.branches_expander,
-                "branches-expanded",
-                &self.branches_list_box,
-                false,
-            ),
-            (
-                &self.tags_expander,
-                "tags-expanded",
-                &self.tags_list_box,
-                false,
-            ),
-            (
-                &self.stashes_expander,
-                "stashes-expanded",
-                &self.stashes_list_box,
-                true,
-            ),
-        ] {
-            let matched = refilter(list_box);
-            any_match |= matched;
-            expander.set_visible(matched || !(filtering || hide_when_empty));
-            expander.set_expanded(filtering || self.settings.boolean(key));
-        }
-
-        let mut any_remote_match = false;
-        for list_box in self.remote_list_boxes.borrow().iter() {
-            let matched = refilter(list_box);
-            any_remote_match |= matched;
-            if let Some(expander) = list_box
-                .ancestor(gtk::Expander::static_type())
-                .and_downcast::<gtk::Expander>()
-            {
-                expander.set_visible(matched || !filtering);
-                if filtering {
-                    expander.set_expanded(true);
+            // A section that was hidden comes back as a new, expanded row, so
+            // set every section, not only those that changed.
+            for i in 0..self.tree.model().n_items() {
+                let Some(row) = self.tree.child_row(i) else {
+                    continue;
+                };
+                let Some(section) = header_section(row.upcast_ref()) else {
+                    continue;
+                };
+                row.set_expanded(filtering || self.settings.boolean(section.settings_key()));
+                if filtering && section == Section::Remotes {
+                    for j in 0..self.section(Section::Remotes).filtered.n_items() {
+                        if let Some(remote_row) = row.child_row(j) {
+                            remote_row.set_expanded(true);
+                        }
+                    }
                 }
             }
-        }
-        any_match |= any_remote_match;
-        self.remotes_expander
-            .set_visible(any_remote_match || !filtering);
-        self.remotes_expander
-            .set_expanded(filtering || self.settings.boolean("remotes-expanded"));
 
-        self.no_matches_label.set_visible(filtering && !any_match);
+            let any_match = self
+                .sections
+                .iter()
+                .any(|model| model.filtered.n_items() > 0);
+            self.no_matches_label.set_visible(filtering && !any_match);
+        });
     }
 
     /// Switch to the first ref (in display order) matching the filter.
     fn activate_first_match(&self) {
         // The entry debounces `search-changed`, so apply the latest text first.
         self.apply_filter();
-        let query = self.filter_query.borrow().clone();
-        if query.is_empty() {
+        if self.filter_query.borrow().is_empty() {
             return;
         }
 
-        let first_match = [
-            &self.branches_list_box,
-            &self.tags_list_box,
-            &self.stashes_list_box,
-        ]
-        .into_iter()
-        .chain(self.remote_list_boxes.borrow().iter())
-        .find_map(|list_box| list_box_rows(list_box).find(|row| row_matches_filter(row, &query)));
-
-        if let Some(row) = first_match {
-            row.activate();
+        let first_match = Section::ALL
+            .into_iter()
+            .find_map(|section| self.ref_items(section, true).first().and_then(ref_info));
+        if let Some(ref_info) = first_match {
+            self.activate_ref(ref_info);
         }
     }
 
-    /// Select a ref by name.
-    ///
-    /// # Arguments
-    /// * `ref_name` - Name of the branch, remote branch, tag, or stash to select
-    ///
-    /// # Returns
-    /// `true` if the ref was found and selected, `false` otherwise.
-    pub fn select_ref(&self, ref_name: &str) -> bool {
-        let remote_list_boxes = self.remote_list_boxes.borrow();
-        let found = [&self.branches_list_box]
-            .into_iter()
-            .chain(remote_list_boxes.iter())
-            .chain([&self.tags_list_box, &self.stashes_list_box])
-            .find_map(|list_box| {
-                find_row_by_ref_name(list_box, ref_name).map(|row| (list_box, row))
-            });
+    /// The ref items of `section` in display order: all of them, or only
+    /// those passing the filter.
+    fn ref_items(&self, section: Section, filtered: bool) -> Vec<glib::Object> {
+        let model = self.section(section);
+        let top: gio::ListModel = if filtered {
+            model.filtered.clone().upcast()
+        } else {
+            model.store.clone().upcast()
+        };
+        if section != Section::Remotes {
+            return list_model_items(&top);
+        }
+        list_model_items(&top)
+            .iter()
+            .filter_map(header_children)
+            .filter_map(|children| {
+                if filtered {
+                    Some(children.upcast())
+                } else {
+                    children.model()
+                }
+            })
+            .flat_map(|branches| list_model_items(&branches))
+            .collect()
+    }
 
-        let Some((list_box, (row, ref_info))) = found else {
+    /// Find a ref by name, preferring a branch, then a remote branch, then a
+    /// tag, then a stash.
+    fn find_ref(&self, name: &str) -> Option<SelectedRef> {
+        [
+            Section::Branches,
+            Section::Remotes,
+            Section::Tags,
+            Section::Stashes,
+        ]
+        .into_iter()
+        .find_map(|section| {
+            self.ref_items(section, false)
+                .iter()
+                .find_map(|item| ref_info(item).filter(|info| info.name == name))
+        })
+    }
+
+    /// Whether the panel lists `ref_info`.
+    fn contains(&self, ref_info: &SelectedRef) -> bool {
+        let section = match ref_info.ref_type {
+            RefType::Branch => Section::Branches,
+            RefType::Remote => Section::Remotes,
+            RefType::Tag => Section::Tags,
+            RefType::Stash => Section::Stashes,
+        };
+        self.ref_items(section, false)
+            .iter()
+            .any(|item| is_ref(item, ref_info))
+    }
+
+    fn select_ref(&self, ref_name: &str) -> bool {
+        let Some(ref_info) = self.find_ref(ref_name) else {
             return false;
         };
-        list_box.select_row(Some(&row));
         *self.selected_ref.borrow_mut() = Some(ref_info);
+        self.sync_selection();
         true
-    }
-
-    /// Register a callback for when a ref is selected (activated).
-    ///
-    /// # Arguments
-    /// * `callback` - Function called with the ref name and type when activated
-    pub fn on_ref_selected<F: Fn(&str, RefType) + Clone + 'static>(&self, callback: F) {
-        let handler: Rc<dyn Fn(&str, RefType)> = Rc::new(move |name, ty| callback(name, ty));
-        *self.activate_handler.borrow_mut() = Some(handler.clone());
-
-        let selected_ref = self.selected_ref.clone();
-        let handler_for_branches = handler.clone();
-        self.branches_list_box.connect_row_activated(move |_, row| {
-            if let Some(ref_info) = row_ref_info(row) {
-                *selected_ref.borrow_mut() = Some(ref_info.clone());
-                handler_for_branches(&ref_info.name, ref_info.ref_type);
-            }
-        });
-
-        let selected_ref = self.selected_ref.clone();
-        let handler_for_tags = handler.clone();
-        self.tags_list_box.connect_row_activated(move |_, row| {
-            if let Some(ref_info) = row_ref_info(row) {
-                *selected_ref.borrow_mut() = Some(ref_info.clone());
-                handler_for_tags(&ref_info.name, ref_info.ref_type);
-            }
-        });
-
-        let selected_ref = self.selected_ref.clone();
-        let handler_for_stashes = handler;
-        self.stashes_list_box.connect_row_activated(move |_, row| {
-            if let Some(ref_info) = row_ref_info(row) {
-                *selected_ref.borrow_mut() = Some(ref_info.clone());
-                handler_for_stashes(&ref_info.name, ref_info.ref_type);
-            }
-        });
-
-        // Remote list boxes are wired when populated in `populate_remotes_section`.
-    }
-
-    /// Register a callback for create and delete requests from the header
-    /// buttons and row context menus.
-    pub fn on_ref_action<F: Fn(RefAction) + 'static>(&self, callback: F) {
-        *self.ref_action_handler.borrow_mut() = Some(Rc::new(callback));
-    }
-
-    fn selected_row_ref_info(&self) -> Option<SelectedRef> {
-        self.branches_list_box
-            .selected_row()
-            .and_then(|r| row_ref_info(&r))
-            .or_else(|| {
-                self.tags_list_box
-                    .selected_row()
-                    .and_then(|r| row_ref_info(&r))
-            })
-            .or_else(|| {
-                self.stashes_list_box
-                    .selected_row()
-                    .and_then(|r| row_ref_info(&r))
-            })
-            .or_else(|| {
-                self.remote_list_boxes
-                    .borrow()
-                    .iter()
-                    .find_map(|lb| lb.selected_row().and_then(|r| row_ref_info(&r)))
-            })
-    }
-
-    fn any_row_selected(&self) -> bool {
-        self.branches_list_box.selected_row().is_some()
-            || self.tags_list_box.selected_row().is_some()
-            || self.stashes_list_box.selected_row().is_some()
-            || self
-                .remote_list_boxes
-                .borrow()
-                .iter()
-                .any(|lb| lb.selected_row().is_some())
     }
 
     /// Ensure a default ref is selected if nothing is currently selected.
     fn ensure_default_selection(&self) {
-        if self.any_row_selected() {
+        let selected = self.selected_ref.borrow().clone();
+        if selected.is_some_and(|ref_info| self.contains(&ref_info)) {
             return;
         }
 
-        // Prefer main if present.
+        // Prefer main if present, otherwise the first branch, otherwise the
+        // first tag.
         if self.select_ref("main") {
             return;
         }
+        let first = [Section::Branches, Section::Tags]
+            .into_iter()
+            .find_map(|section| self.ref_items(section, false).first().and_then(ref_info));
+        if let Some(ref_info) = first {
+            *self.selected_ref.borrow_mut() = Some(ref_info);
+            self.sync_selection();
+        }
+    }
 
-        // Otherwise select first selectable row in branches if present.
-        if let Some(row) = self.branches_list_box.row_at_index(0) {
-            if row.is_selectable() {
-                self.branches_list_box.select_row(Some(&row));
-                if let Some(ref_info) = row_ref_info(&row) {
-                    *self.selected_ref.borrow_mut() = Some(ref_info);
-                }
+    /// Select the selected ref's row if it is listed, or nothing if not.
+    fn sync_selection(&self) {
+        if self.batching.get() {
+            return;
+        }
+        let target = self.selected_ref.borrow().clone();
+        if let Some(target) = &target {
+            if self
+                .selection
+                .selected_item()
+                .is_some_and(|row| is_ref(&row, target))
+            {
                 return;
             }
         }
 
-        // Otherwise select first selectable row in tags if present.
-        if let Some(row) = self.tags_list_box.row_at_index(0) {
-            if row.is_selectable() {
-                self.tags_list_box.select_row(Some(&row));
-                if let Some(ref_info) = row_ref_info(&row) {
-                    *self.selected_ref.borrow_mut() = Some(ref_info);
-                }
+        let position = target.and_then(|target| {
+            (0..self.tree.n_items())
+                .find(|&i| self.tree.item(i).is_some_and(|row| is_ref(&row, &target)))
+        });
+        let position = position.unwrap_or(gtk::INVALID_LIST_POSITION);
+        if self.selection.selected() != position {
+            self.selection.set_selected(position);
+        }
+    }
+
+    /// Switch to the ref of a ref row, or expand/collapse a header row.
+    fn activate_row(&self, row: &gtk::TreeListRow) {
+        match ref_info(row.upcast_ref()) {
+            Some(ref_info) => self.activate_ref(ref_info),
+            None => self.toggle_header(row),
+        }
+    }
+
+    fn activate_ref(&self, ref_info: SelectedRef) {
+        *self.selected_ref.borrow_mut() = Some(ref_info.clone());
+        self.sync_selection();
+        // Clone out of the cell so the handler may re-register itself.
+        let handler = self.activate_handler.borrow().clone();
+        if let Some(handler) = handler {
+            handler(&ref_info.name, ref_info.ref_type);
+        }
+    }
+
+    /// Expand or collapse a header, saving a section's state unless the
+    /// filter has expanded it temporarily.
+    fn toggle_header(&self, row: &gtk::TreeListRow) {
+        let expanded = !row.is_expanded();
+        row.set_expanded(expanded);
+        if let Some(section) = header_section(row.upcast_ref()) {
+            if self.filter_query.borrow().is_empty() {
+                let _ = self.settings.set_boolean(section.settings_key(), expanded);
             }
         }
+    }
+
+    fn bind_list_item(self: &Rc<Self>, list_item: &gtk::ListItem) {
+        let Some(row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+            return;
+        };
+        let Some(item) = row.item().and_downcast::<glib::BoxedAnyObject>() else {
+            return;
+        };
+        match &*item.borrow::<PanelItem>() {
+            PanelItem::Header { kind, .. } => {
+                let header = self.row_widget(list_item, HEADER_ROW, build_header_row);
+                update_header_row(&header, &row, kind);
+                // Not activatable, so headers get no hover background; they
+                // toggle by their own click gesture and the list's key handler.
+                list_item.set_selectable(false);
+                list_item.set_activatable(false);
+            }
+            PanelItem::Ref(entry) => {
+                let ref_row = self.row_widget(list_item, REF_ROW, build_ref_row);
+                update_ref_row(&ref_row, entry, row.depth());
+                list_item.set_selectable(true);
+                list_item.set_activatable(true);
+            }
+        }
+    }
+
+    /// The list item's row widget of the given kind, built if the recycled
+    /// list item holds the other kind (or none yet).
+    fn row_widget(
+        self: &Rc<Self>,
+        list_item: &gtk::ListItem,
+        name: &str,
+        build: fn(Weak<Inner>, &gtk::ListItem) -> gtk::Box,
+    ) -> gtk::Box {
+        if let Some(existing) = list_item
+            .child()
+            .filter(|child| child.widget_name() == name)
+            .and_downcast::<gtk::Box>()
+        {
+            return existing;
+        }
+        let widget = build(Rc::downgrade(self), list_item);
+        widget.set_widget_name(name);
+        list_item.set_child(Some(&widget));
+        widget
+    }
+
+    /// Show the context menu for the ref row `widget` of `list_item`.
+    fn show_context_menu(
+        &self,
+        list_item: &gtk::ListItem,
+        widget: &gtk::Widget,
+        gesture: &gtk::GestureClick,
+        x: f64,
+        y: f64,
+    ) {
+        let Some(ref_info) = list_item.item().and_then(|row| ref_info(&row)) else {
+            return;
+        };
+        let menu = match ref_info.ref_type {
+            RefType::Branch | RefType::Tag => &self.ref_menu,
+            RefType::Stash => &self.stash_menu,
+            RefType::Remote => return,
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+
+        let is_checked_out = ref_info.ref_type == RefType::Branch
+            && self.checked_out_branch.borrow().as_deref() == Some(ref_info.name.as_str());
+        self.delete_action.set_enabled(!is_checked_out);
+        *self.context_ref.borrow_mut() = Some(ref_info);
+
+        // The popover lives on the panel root, so point at the click there.
+        let Some(point) =
+            widget.compute_point(&self.widget, &gtk::graphene::Point::new(x as f32, y as f32))
+        else {
+            return;
+        };
+        self.context_popover.set_menu_model(Some(menu));
+        self.context_popover
+            .set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                point.x() as i32,
+                point.y() as i32,
+                1,
+                1,
+            )));
+        self.context_popover.popup();
     }
 }
 
@@ -751,81 +932,313 @@ impl BranchPanel {
 // Private helper functions
 // =============================================================================
 
-/// Populate the branches list box.
-fn populate_branches_list(
-    list_box: &gtk::ListBox,
-    branches: &[BranchInfo],
-    checked_out_branch: Option<&str>,
-) {
-    let sorted_branches = sort_branches(branches);
-    for branch_info in &sorted_branches {
-        let row = create_branch_row(branch_info, checked_out_branch);
-        list_box.append(&row);
-    }
+/// Run `f` on the panel item behind `obj`, which is either the item or the
+/// tree row holding it.
+fn with_item<R>(obj: &glib::Object, f: impl FnOnce(&PanelItem) -> R) -> Option<R> {
+    let item = match obj.downcast_ref::<gtk::TreeListRow>() {
+        Some(row) => row.item()?,
+        None => obj.clone(),
+    };
+    let item = item.downcast_ref::<glib::BoxedAnyObject>()?;
+    let item = item.borrow::<PanelItem>();
+    Some(f(&item))
 }
 
-/// Populate the remotes section with one nested expander per remote name.
-fn populate_remotes_section(
-    content_box: &gtk::Box,
-    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
-    local_list_boxes: &[&gtk::ListBox],
-    selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
-    activate_handler: &Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
-    filter_query: &Rc<RefCell<String>>,
-    remote_branches: &[BranchInfo],
-) {
-    let grouped = group_remote_branches(remote_branches);
+/// The ref of a ref row or item.
+fn ref_info(obj: &glib::Object) -> Option<SelectedRef> {
+    with_item(obj, |item| match item {
+        PanelItem::Ref(entry) => Some(entry.info.clone()),
+        PanelItem::Header { .. } => None,
+    })
+    .flatten()
+}
 
-    for (remote_name, branches) in grouped {
-        let remote_expander = gtk::Expander::builder().expanded(true).build();
-        remote_expander.add_css_class("branch-panel-expander");
-        remote_expander.add_css_class("branch-panel-remote-expander");
+/// Whether `obj` is the row or item of `ref_info`.
+fn is_ref(obj: &glib::Object, ref_info: &SelectedRef) -> bool {
+    with_item(
+        obj,
+        |item| matches!(item, PanelItem::Ref(entry) if entry.info == *ref_info),
+    )
+    .unwrap_or(false)
+}
 
-        let remote_label = gtk::Label::builder()
-            .label(&remote_name)
-            .halign(gtk::Align::Start)
-            .build();
-        remote_label.add_css_class("heading");
-        let remote_label_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .build();
-        remote_label_box.add_css_class("branch-panel-expander-label");
-        remote_label_box.append(&remote_label);
-        set_label_count_tooltip(&remote_label, branches.len(), "branch", "branches");
-        remote_expander.set_label_widget(Some(&remote_label_box));
-        set_expander_chevron_margin(&remote_expander, 10);
+/// The (filtered) rows under a header row or item.
+fn header_children(obj: &glib::Object) -> Option<gtk::FilterListModel> {
+    with_item(obj, |item| match item {
+        PanelItem::Header { children, .. } => Some(children.clone()),
+        PanelItem::Ref(_) => None,
+    })
+    .flatten()
+}
 
-        let list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .build();
+/// The section a top-level header row or item stands for.
+fn header_section(obj: &glib::Object) -> Option<Section> {
+    with_item(obj, |item| match item {
+        PanelItem::Header {
+            kind: HeaderKind::Section(section),
+            ..
+        } => Some(*section),
+        _ => None,
+    })
+    .flatten()
+}
 
-        for branch_info in &branches {
-            list_box.append(&create_remote_branch_row(branch_info));
+/// Hover text for a header: how many refs (or remotes) it holds, filter aside.
+fn header_count_tooltip(obj: &glib::Object) -> Option<String> {
+    with_item(obj, |item| match item {
+        PanelItem::Header { kind, children } => {
+            let count = children.model().map_or(0, |all| all.n_items()) as usize;
+            let (singular, plural) = match kind {
+                HeaderKind::Section(section) => section.count_nouns(),
+                HeaderKind::Remote(_) => ("branch", "branches"),
+            };
+            Some(format_count_tooltip(count, singular, plural))
         }
-        set_ref_filter_func(&list_box, filter_query);
+        PanelItem::Ref(_) => None,
+    })
+    .flatten()
+}
 
-        wire_remote_list_box(
-            &list_box,
-            local_list_boxes,
-            remote_list_boxes,
-            selected_ref,
-            activate_handler,
-        );
+fn list_model_items(model: &gio::ListModel) -> Vec<glib::Object> {
+    (0..model.n_items()).filter_map(|i| model.item(i)).collect()
+}
 
-        remote_expander.set_child(Some(&list_box));
-        content_box.append(&remote_expander);
-        remote_list_boxes.borrow_mut().push(list_box);
+/// Replace the contents of `store` with `items` in one change.
+fn replace_items(store: &gio::ListStore, items: impl Iterator<Item = PanelItem>) {
+    let items: Vec<glib::BoxedAnyObject> = items.map(glib::BoxedAnyObject::new).collect();
+    store.splice(0, store.n_items(), &items);
+}
+
+fn branch_entry(branch: &BranchInfo, checked_out_branch: Option<&str>) -> RefEntry {
+    RefEntry {
+        info: SelectedRef {
+            name: branch.name.clone(),
+            ref_type: RefType::Branch,
+        },
+        label: branch.name.clone(),
+        tooltip: branch.name.clone(),
+        time_ago: format_time_ago(branch.latest_commit_time),
+        checked_out: checked_out_branch == Some(branch.name.as_str()),
+        filter_text: branch.name.clone(),
     }
 }
 
-fn clear_remotes_section(
-    content_box: &gtk::Box,
-    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
-) {
-    while let Some(child) = content_box.first_child() {
-        content_box.remove(&child);
+fn remote_entry(branch: &BranchInfo) -> RefEntry {
+    RefEntry {
+        info: SelectedRef {
+            name: branch.name.clone(),
+            ref_type: RefType::Remote,
+        },
+        label: remote_branch_short_name(&branch.name).to_string(),
+        tooltip: branch.name.clone(),
+        time_ago: format_time_ago(branch.latest_commit_time),
+        checked_out: false,
+        filter_text: branch.name.clone(),
     }
-    remote_list_boxes.borrow_mut().clear();
+}
+
+fn tag_entry(tag: &TagInfo) -> RefEntry {
+    RefEntry {
+        info: SelectedRef {
+            name: tag.name.clone(),
+            ref_type: RefType::Tag,
+        },
+        label: tag.name.clone(),
+        tooltip: tag.name.clone(),
+        time_ago: format_time_ago(tag.commit_time),
+        checked_out: false,
+        filter_text: tag.name.clone(),
+    }
+}
+
+/// A stash row shows its message; the filter matches the message too, since
+/// the name is only `stash@{N}`.
+fn stash_entry(stash: &StashInfo) -> RefEntry {
+    RefEntry {
+        info: SelectedRef {
+            name: stash.name.clone(),
+            ref_type: RefType::Stash,
+        },
+        label: stash.message.clone(),
+        tooltip: format!("{}: {}", stash.name, stash.message),
+        time_ago: format_time_ago(stash.time),
+        checked_out: false,
+        filter_text: format!("{} {}", stash.name, stash.message),
+    }
+}
+
+/// Build the widget for a header row: chevron, title, and an optional "+"
+/// button. Clicking anywhere but the button expands or collapses it.
+fn build_header_row(panel: Weak<Inner>, list_item: &gtk::ListItem) -> gtk::Box {
+    let header = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(["branch-panel-header"])
+        .build();
+
+    // Only draws the chevron; the header's click gesture does the toggling,
+    // so a click on the chevron must reach it. The list row's own 2px padding
+    // makes up the rest of the 10px inset.
+    let expander = gtk::TreeExpander::builder()
+        .indent_for_depth(false)
+        .can_target(false)
+        .margin_start(8)
+        .build();
+    header.append(&expander);
+
+    let label_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(["branch-panel-expander-label"])
+        .build();
+    let title = gtk::Label::builder().halign(gtk::Align::Start).build();
+    title.add_css_class("heading");
+    label_box.append(&title);
+    append_header_button(&label_box);
+    header.append(&label_box);
+
+    // The count is read on hover, so it is current after every refresh.
+    let list_item_for_tooltip = list_item.downgrade();
+    label_box.set_has_tooltip(true);
+    label_box.connect_query_tooltip(move |_, _, _, _, tooltip| {
+        let text = list_item_for_tooltip
+            .upgrade()
+            .and_then(|list_item| list_item.item())
+            .and_then(|row| header_count_tooltip(&row));
+        tooltip.set_text(text.as_deref());
+        text.is_some()
+    });
+
+    // Every click toggles, so a double click opens and closes again.
+    let click = gtk::GestureClick::new();
+    click.set_button(gtk::gdk::BUTTON_PRIMARY);
+    let list_item = list_item.downgrade();
+    click.connect_released(move |_, _, _, _| {
+        let row = list_item
+            .upgrade()
+            .and_then(|list_item| list_item.item())
+            .and_downcast::<gtk::TreeListRow>();
+        if let (Some(panel), Some(row)) = (panel.upgrade(), row) {
+            panel.toggle_header(&row);
+        }
+    });
+    header.add_controller(click);
+    header
+}
+
+fn update_header_row(header: &gtk::Box, row: &gtk::TreeListRow, kind: &HeaderKind) {
+    let Some(expander) = header.first_child().and_downcast::<gtk::TreeExpander>() else {
+        return;
+    };
+    expander.set_list_row(Some(row));
+    let Some(label_box) = expander.next_sibling() else {
+        return;
+    };
+    let Some(title) = label_box.first_child().and_downcast::<gtk::Label>() else {
+        return;
+    };
+    let Some(button) = title.next_sibling().and_downcast::<gtk::Button>() else {
+        return;
+    };
+
+    let (text, create_button, indent) = match kind {
+        HeaderKind::Section(section) => (section.title(), section.create_button(), 0),
+        HeaderKind::Remote(remote) => (remote.as_str(), None, REMOTE_INDENT),
+    };
+    title.set_text(text);
+    header.set_margin_start(indent);
+    button.set_visible(create_button.is_some());
+    button.set_action_name(create_button.map(|(_, action)| action));
+    button.set_tooltip_text(create_button.map(|(tooltip, _)| tooltip));
+}
+
+/// Build the widget for a ref row: checkmark, name, and age. A click switches
+/// to the ref; a right click opens its context menu.
+fn build_ref_row(panel: Weak<Inner>, list_item: &gtk::ListItem) -> gtk::Box {
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(6)
+        .spacing(8)
+        .hexpand(true)
+        .build();
+
+    // Checkmark on the checked-out branch; a blank placeholder on other rows
+    // keeps the names aligned.
+    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
+    check_icon.set_pixel_size(16);
+    row_box.append(&check_icon);
+
+    let name_label = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    row_box.append(&name_label);
+
+    let time_label = gtk::Label::builder()
+        .halign(gtk::Align::End)
+        .hexpand(true)
+        .build();
+    time_label.add_css_class("dim-label");
+    row_box.append(&time_label);
+
+    // A single click switches to the ref; selection itself is left to the
+    // list view. Enter and double clicks arrive as list activation.
+    let click = gtk::GestureClick::new();
+    click.set_button(gtk::gdk::BUTTON_PRIMARY);
+    let (panel_for_click, list_item_for_click) = (panel.clone(), list_item.downgrade());
+    click.connect_released(move |_, n_press, _, _| {
+        if n_press != 1 {
+            return;
+        }
+        let row = list_item_for_click
+            .upgrade()
+            .and_then(|list_item| list_item.item())
+            .and_downcast::<gtk::TreeListRow>();
+        if let (Some(panel), Some(row)) = (panel_for_click.upgrade(), row) {
+            panel.activate_row(&row);
+        }
+    });
+    row_box.add_controller(click);
+
+    let right_click = gtk::GestureClick::new();
+    right_click.set_button(gtk::gdk::BUTTON_SECONDARY);
+    let list_item = list_item.downgrade();
+    right_click.connect_pressed(move |gesture, _, x, y| {
+        let (Some(panel), Some(list_item), Some(widget)) =
+            (panel.upgrade(), list_item.upgrade(), gesture.widget())
+        else {
+            return;
+        };
+        panel.show_context_menu(&list_item, &widget, gesture, x, y);
+    });
+    row_box.add_controller(right_click);
+    row_box
+}
+
+fn update_ref_row(row_box: &gtk::Box, entry: &RefEntry, depth: u32) {
+    // Remote branches sit under their remote's header (depth 2).
+    let indent = if depth >= 2 { REMOTE_INDENT } else { 0 };
+    row_box.set_margin_start(12 + indent);
+
+    let Some(check_icon) = row_box.first_child().and_downcast::<gtk::Image>() else {
+        return;
+    };
+    let Some(name_label) = check_icon.next_sibling().and_downcast::<gtk::Label>() else {
+        return;
+    };
+    let Some(time_label) = name_label.next_sibling().and_downcast::<gtk::Label>() else {
+        return;
+    };
+
+    check_icon.set_opacity(if entry.checked_out { 1.0 } else { 0.0 });
+    check_icon.set_tooltip_text(entry.checked_out.then_some("Checked out branch"));
+    name_label.set_text(&entry.label);
+    name_label.set_tooltip_text(Some(&entry.tooltip));
+    time_label.set_markup(&format!(
+        "<span size='small'>{}</span>",
+        glib::markup_escape_text(&entry.time_ago)
+    ));
 }
 
 /// Group remote-tracking branches by remote name (the part before the first `/`).
@@ -856,153 +1269,9 @@ fn remote_branch_short_name(full_name: &str) -> &str {
         .unwrap_or(full_name)
 }
 
-/// Keep selection exclusive across the branch, tag, stash, and remote lists.
-fn wire_local_list_selection(
-    local_list_boxes: &[&gtk::ListBox],
-    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
-    selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
-) {
-    for &list_box in local_list_boxes {
-        let others: Vec<gtk::ListBox> = local_list_boxes
-            .iter()
-            .filter(|&&lb| lb != list_box)
-            .map(|&lb| lb.clone())
-            .collect();
-        let remotes = remote_list_boxes.clone();
-        let selected = selected_ref.clone();
-        list_box.connect_row_selected(move |_, row| {
-            if let Some(r) = row {
-                for lb in &others {
-                    lb.unselect_all();
-                }
-                unselect_remote_lists(&remotes, None);
-                if let Some(ref_info) = row_ref_info(r) {
-                    *selected.borrow_mut() = Some(ref_info);
-                }
-            }
-        });
-    }
-}
-
-fn wire_remote_list_box(
-    list_box: &gtk::ListBox,
-    local_list_boxes: &[&gtk::ListBox],
-    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
-    selected_ref: &Rc<RefCell<Option<SelectedRef>>>,
-    activate_handler: &Rc<RefCell<Option<Rc<dyn Fn(&str, RefType)>>>>,
-) {
-    let local_lbs: Vec<gtk::ListBox> = local_list_boxes.iter().map(|&lb| lb.clone()).collect();
-    let remotes_rc = remote_list_boxes.clone();
-    let this_lb = list_box.clone();
-    let selected = selected_ref.clone();
-    list_box.connect_row_selected(move |_, row| {
-        if row.is_some() {
-            for lb in &local_lbs {
-                lb.unselect_all();
-            }
-            unselect_remote_lists(&remotes_rc, Some(&this_lb));
-            if let Some(r) = row {
-                if let Some(ref_info) = row_ref_info(r) {
-                    *selected.borrow_mut() = Some(ref_info);
-                }
-            }
-        }
-    });
-
-    let selected = selected_ref.clone();
-    let handler_rc = activate_handler.clone();
-    list_box.connect_row_activated(move |_, row| {
-        if let Some(ref_info) = row_ref_info(row) {
-            *selected.borrow_mut() = Some(ref_info.clone());
-            if let Some(handler) = handler_rc.borrow().as_ref() {
-                handler(&ref_info.name, ref_info.ref_type);
-            }
-        }
-    });
-}
-
-fn unselect_remote_lists(
-    remote_list_boxes: &Rc<RefCell<Vec<gtk::ListBox>>>,
-    except: Option<&gtk::ListBox>,
-) {
-    for lb in remote_list_boxes.borrow().iter() {
-        if except.is_none_or(|skip| lb != skip) {
-            lb.unselect_all();
-        }
-    }
-}
-
-/// Find the row in `list_box` whose ref is named `ref_name`.
-fn find_row_by_ref_name(
-    list_box: &gtk::ListBox,
-    ref_name: &str,
-) -> Option<(gtk::ListBoxRow, SelectedRef)> {
-    let mut i = 0;
-    while let Some(row) = list_box.row_at_index(i) {
-        if let Some(ref_info) = row_ref_info(&row).filter(|info| info.name == ref_name) {
-            return Some((row, ref_info));
-        }
-        i += 1;
-    }
-    None
-}
-
-/// The rows of `list_box`, in display order.
-fn list_box_rows(list_box: &gtk::ListBox) -> impl Iterator<Item = gtk::ListBoxRow> + '_ {
-    (0..).map_while(|i| list_box.row_at_index(i))
-}
-
-/// Hide the rows of `list_box` that don't match the shared filter text.
-fn set_ref_filter_func(list_box: &gtk::ListBox, filter_query: &Rc<RefCell<String>>) {
-    let filter_query = filter_query.clone();
-    list_box.set_filter_func(move |row| row_matches_filter(row, &filter_query.borrow()));
-}
-
-/// Whether `row` should be listed for the (already lowercased) filter `query`.
-fn row_matches_filter(row: &gtk::ListBoxRow, query: &str) -> bool {
-    query.is_empty() || row_filter_text(row).is_some_and(|text| filter_matches(&text, query))
-}
-
-/// The text a row is filtered on: its ref name, plus the message for a stash
-/// (which is what the row displays; the name is only `stash@{N}`).
-fn row_filter_text(row: &gtk::ListBoxRow) -> Option<String> {
-    let ref_info = row_ref_info(row)?;
-    if ref_info.ref_type != RefType::Stash {
-        return Some(ref_info.name);
-    }
-
-    let mut current = row.child()?.first_child();
-    while let Some(widget) = current {
-        if widget.widget_name() == "stash-message" {
-            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-                return Some(format!("{} {}", ref_info.name, label.text()));
-            }
-        }
-        current = widget.next_sibling();
-    }
-    Some(ref_info.name)
-}
-
 /// Case-insensitive substring match. `query` must already be lowercased.
 fn filter_matches(text: &str, query: &str) -> bool {
     text.to_lowercase().contains(query)
-}
-
-/// Populate the stashes list box, hiding the section when there are none.
-fn populate_stashes_list(expander: &gtk::Expander, list_box: &gtk::ListBox, stashes: &[StashInfo]) {
-    for stash_info in stashes {
-        list_box.append(&create_stash_row(stash_info));
-    }
-    expander.set_visible(!stashes.is_empty());
-}
-
-/// Populate the tags list box.
-fn populate_tags_list(list_box: &gtk::ListBox, tags: &[TagInfo]) {
-    let sorted_tags = sort_tags(tags);
-    for tag_info in &sorted_tags {
-        let row = create_tag_row(tag_info);
-        list_box.append(&row);
-    }
 }
 
 /// Format a hover tooltip describing how many refs are in a section.
@@ -1014,66 +1283,12 @@ fn format_count_tooltip(count: usize, singular: &str, plural: &str) -> String {
     }
 }
 
-/// Show branch, tag, stash, and remote totals on the section labels.
-#[allow(clippy::too_many_arguments)]
-fn set_section_count_tooltips(
-    branches_label: &gtk::Label,
-    tags_label: &gtk::Label,
-    stashes_label: &gtk::Label,
-    remotes_label: &gtk::Label,
-    branches: &[BranchInfo],
-    remote_branches: &[BranchInfo],
-    tags: &[TagInfo],
-    stashes: &[StashInfo],
-) {
-    set_label_count_tooltip(branches_label, branches.len(), "branch", "branches");
-    set_label_count_tooltip(tags_label, tags.len(), "tag", "tags");
-    set_label_count_tooltip(stashes_label, stashes.len(), "stash", "stashes");
-    set_label_count_tooltip(
-        remotes_label,
-        group_remote_branches(remote_branches).len(),
-        "remote",
-        "remotes",
-    );
-}
-
-fn set_label_count_tooltip(label: &gtk::Label, count: usize, singular: &str, plural: &str) {
-    let text = format_count_tooltip(count, singular, plural);
-    label.set_tooltip_text(Some(&text));
-    if let Some(parent) = label.parent() {
-        parent.set_tooltip_text(Some(&text));
-    }
-}
-
-/// Add margin to the expander chevron icon.
-fn set_expander_chevron_margin(expander: &gtk::Expander, margin_start: i32) {
-    fn apply_to_builtin_icon(widget: &gtk::Widget, margin_start: i32) -> bool {
-        if widget.type_().name() == "GtkBuiltinIcon" {
-            widget.set_margin_start(margin_start);
-            return true;
-        }
-
-        let mut child = widget.first_child();
-        while let Some(current) = child {
-            if apply_to_builtin_icon(&current, margin_start) {
-                return true;
-            }
-            child = current.next_sibling();
-        }
-
-        false
-    }
-
-    let _ = apply_to_builtin_icon(expander.upcast_ref(), margin_start);
-}
-
-/// Add a small "+" button to the end of a section header that activates `action`.
-fn append_header_button(label_box: &gtk::Box, tooltip: &str, action: &str) {
+/// Add a small "+" button to the end of a section header. Its action and
+/// tooltip are set per section when the row is bound.
+fn append_header_button(label_box: &gtk::Box) {
     label_box.set_hexpand(true);
     let button = gtk::Button::builder()
         .icon_name("list-add-symbolic")
-        .tooltip_text(tooltip)
-        .action_name(action)
         .halign(gtk::Align::End)
         .hexpand(true)
         .valign(gtk::Align::Center)
@@ -1127,106 +1342,6 @@ fn install_ref_actions(
     delete
 }
 
-/// Show `menu` in `popover` when a row of `list_box` is right-clicked. The
-/// list box is kept across refreshes while its rows are rebuilt, so the
-/// gesture is attached here and the clicked row is looked up at click time.
-fn attach_context_menu(
-    list_box: &gtk::ListBox,
-    menu: &gio::Menu,
-    popover: &gtk::PopoverMenu,
-    context_ref: &Rc<RefCell<Option<SelectedRef>>>,
-    checked_out_branch: &Rc<RefCell<Option<String>>>,
-    delete_action: &gio::SimpleAction,
-) {
-    let right_click = gtk::GestureClick::new();
-    right_click.set_button(3);
-    let list_box_for_click = list_box.clone();
-    let context_ref = context_ref.clone();
-    let checked_out_branch = checked_out_branch.clone();
-    let delete_action = delete_action.clone();
-    let popover = popover.clone();
-    let menu = menu.clone();
-    right_click.connect_pressed(move |gesture, _, x, y| {
-        let Some(ref_info) = list_box_for_click
-            .row_at_y(y as i32)
-            .and_then(|row| row_ref_info(&row))
-        else {
-            return;
-        };
-        gesture.set_state(gtk::EventSequenceState::Claimed);
-
-        let is_checked_out = ref_info.ref_type == RefType::Branch
-            && checked_out_branch.borrow().as_deref() == Some(ref_info.name.as_str());
-        delete_action.set_enabled(!is_checked_out);
-        *context_ref.borrow_mut() = Some(ref_info);
-
-        // The popover lives on the panel root, so point at the click there.
-        let Some(parent) = popover.parent() else {
-            return;
-        };
-        let Some(point) = list_box_for_click
-            .compute_point(&parent, &gtk::graphene::Point::new(x as f32, y as f32))
-        else {
-            return;
-        };
-        popover.set_menu_model(Some(&menu));
-        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
-            point.x() as i32,
-            point.y() as i32,
-            1,
-            1,
-        )));
-        popover.popup();
-    });
-    list_box.add_controller(right_click);
-}
-
-/// Extract the ref info (name and type) from a list box row.
-fn row_ref_info(row: &gtk::ListBoxRow) -> Option<SelectedRef> {
-    let row_name = row.widget_name();
-    if let Some(full) = row_name.as_str().strip_prefix("remote-ref:") {
-        return Some(SelectedRef {
-            name: full.to_string(),
-            ref_type: RefType::Remote,
-        });
-    }
-    if let Some(name) = row_name.as_str().strip_prefix("stash-ref:") {
-        return Some(SelectedRef {
-            name: name.to_string(),
-            ref_type: RefType::Stash,
-        });
-    }
-
-    let child = row.child()?;
-    let box_widget = child.downcast_ref::<gtk::Box>()?;
-
-    let mut name = None;
-    let mut ref_type = None;
-
-    let mut current = box_widget.first_child();
-    while let Some(widget) = current {
-        if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-            match label.widget_name().as_str() {
-                "branch-name" => {
-                    name = Some(label.text().to_string());
-                    ref_type = Some(RefType::Branch);
-                }
-                "tag-name" => {
-                    name = Some(label.text().to_string());
-                    ref_type = Some(RefType::Tag);
-                }
-                _ => {}
-            }
-        }
-        current = widget.next_sibling();
-    }
-
-    match (name, ref_type) {
-        (Some(name), Some(ref_type)) => Some(SelectedRef { name, ref_type }),
-        _ => None,
-    }
-}
-
 /// Sort branches with "main" or "master" first, then by latest commit time.
 fn sort_branches(branches: &[BranchInfo]) -> Vec<BranchInfo> {
     let mut sorted = branches.to_vec();
@@ -1255,201 +1370,6 @@ pub(crate) fn sort_tags(tags: &[TagInfo]) -> Vec<TagInfo> {
     let mut sorted = tags.to_vec();
     sorted.sort_by(|a, b| natural_compare(&b.name, &a.name));
     sorted
-}
-
-/// Create a GTK row widget for a branch.
-fn create_branch_row(
-    branch_info: &BranchInfo,
-    checked_out_branch: Option<&str>,
-) -> gtk::ListBoxRow {
-    let row_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(6)
-        .spacing(8)
-        .build();
-
-    let is_checked_out = checked_out_branch.is_some_and(|b| b == branch_info.name);
-    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
-    check_icon.set_pixel_size(16);
-    check_icon.set_opacity(if is_checked_out { 1.0 } else { 0.0 });
-    check_icon.set_tooltip_text(if is_checked_out {
-        Some("Checked out branch")
-    } else {
-        None
-    });
-    row_box.append(&check_icon);
-
-    let branch_label = gtk::Label::builder().halign(gtk::Align::Start).build();
-    branch_label.set_widget_name("branch-name");
-    branch_label.set_text(&branch_info.name);
-    branch_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    branch_label.set_tooltip_text(Some(&branch_info.name));
-    row_box.append(&branch_label);
-
-    let time_label = gtk::Label::builder()
-        .halign(gtk::Align::End)
-        .hexpand(true)
-        .build();
-
-    let time_ago = format_time_ago(branch_info.latest_commit_time);
-    let markup = format!(
-        "<span size='small'>{}</span>",
-        gtk::glib::markup_escape_text(&time_ago)
-    );
-    time_label.set_markup(&markup);
-    time_label.add_css_class("dim-label");
-
-    row_box.append(&time_label);
-    row_box.set_hexpand(true);
-
-    let row = gtk::ListBoxRow::new();
-    row.set_child(Some(&row_box));
-    row
-}
-
-/// Create a GTK row widget for a remote-tracking branch.
-fn create_remote_branch_row(branch_info: &BranchInfo) -> gtk::ListBoxRow {
-    let short_name = remote_branch_short_name(&branch_info.name);
-
-    let row_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(6)
-        .spacing(8)
-        .build();
-
-    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
-    check_icon.set_pixel_size(16);
-    check_icon.set_opacity(0.0);
-    row_box.append(&check_icon);
-
-    let branch_label = gtk::Label::builder().halign(gtk::Align::Start).build();
-    branch_label.set_text(short_name);
-    branch_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    branch_label.set_tooltip_text(Some(&branch_info.name));
-    row_box.append(&branch_label);
-
-    let time_label = gtk::Label::builder()
-        .halign(gtk::Align::End)
-        .hexpand(true)
-        .build();
-
-    let time_ago = format_time_ago(branch_info.latest_commit_time);
-    let markup = format!(
-        "<span size='small'>{}</span>",
-        gtk::glib::markup_escape_text(&time_ago)
-    );
-    time_label.set_markup(&markup);
-    time_label.add_css_class("dim-label");
-
-    row_box.append(&time_label);
-    row_box.set_hexpand(true);
-
-    let row = gtk::ListBoxRow::new();
-    row.set_widget_name(&format!("remote-ref:{}", branch_info.name));
-    row.set_child(Some(&row_box));
-    row
-}
-
-/// Create a GTK row widget for a tag.
-fn create_tag_row(tag_info: &TagInfo) -> gtk::ListBoxRow {
-    let row_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(6)
-        .spacing(8)
-        .build();
-
-    // Placeholder for checkmark (keeps alignment consistent with branches, but tags can't be "checked out")
-    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
-    check_icon.set_pixel_size(16);
-    check_icon.set_opacity(0.0);
-    row_box.append(&check_icon);
-
-    // Tag name label with ellipsis for long names
-    let tag_label = gtk::Label::builder().halign(gtk::Align::Start).build();
-    tag_label.set_widget_name("tag-name");
-    tag_label.set_text(&tag_info.name);
-    tag_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    tag_label.set_tooltip_text(Some(&tag_info.name));
-    row_box.append(&tag_label);
-
-    // Time ago label (lighter color, smaller font, right-aligned)
-    let time_label = gtk::Label::builder()
-        .halign(gtk::Align::End)
-        .hexpand(true)
-        .build();
-
-    let time_ago = format_time_ago(tag_info.commit_time);
-    let markup = format!(
-        "<span size='small'>{}</span>",
-        gtk::glib::markup_escape_text(&time_ago)
-    );
-    time_label.set_markup(&markup);
-    time_label.add_css_class("dim-label");
-
-    row_box.append(&time_label);
-    row_box.set_hexpand(true);
-
-    let row = gtk::ListBoxRow::new();
-    row.set_child(Some(&row_box));
-    row
-}
-
-/// Create a GTK row widget for a stash entry.
-fn create_stash_row(stash_info: &StashInfo) -> gtk::ListBoxRow {
-    let row_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(6)
-        .spacing(8)
-        .build();
-
-    // Placeholder for checkmark (keeps alignment consistent with branches)
-    let check_icon = gtk::Image::from_icon_name("object-select-symbolic");
-    check_icon.set_pixel_size(16);
-    check_icon.set_opacity(0.0);
-    row_box.append(&check_icon);
-
-    let stash_label = gtk::Label::builder().halign(gtk::Align::Start).build();
-    stash_label.set_widget_name("stash-message");
-    stash_label.set_text(&stash_info.message);
-    stash_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    stash_label.set_tooltip_text(Some(&format!(
-        "{}: {}",
-        stash_info.name, stash_info.message
-    )));
-    row_box.append(&stash_label);
-
-    let time_label = gtk::Label::builder()
-        .halign(gtk::Align::End)
-        .hexpand(true)
-        .build();
-
-    let time_ago = format_time_ago(stash_info.time);
-    let markup = format!(
-        "<span size='small'>{}</span>",
-        gtk::glib::markup_escape_text(&time_ago)
-    );
-    time_label.set_markup(&markup);
-    time_label.add_css_class("dim-label");
-
-    row_box.append(&time_label);
-    row_box.set_hexpand(true);
-
-    let row = gtk::ListBoxRow::new();
-    row.set_widget_name(&format!("stash-ref:{}", stash_info.name));
-    row.set_child(Some(&row_box));
-    row
 }
 
 /// Natural comparison for strings (e.g., "branch-2" < "branch-10").
@@ -1631,6 +1551,70 @@ mod tests {
     fn filter_matches_rejects_refs_without_the_query() {
         assert!(!filter_matches("feature/login", "logout"));
         assert!(!filter_matches("main", "maintenance"));
+    }
+
+    #[test]
+    fn branch_entry_marks_only_the_checked_out_branch() {
+        let main = branch("main", 100);
+        assert!(branch_entry(&main, Some("main")).checked_out);
+        assert!(!branch_entry(&main, Some("feature")).checked_out);
+        assert!(!branch_entry(&main, None).checked_out);
+    }
+
+    #[test]
+    fn remote_entry_shows_branch_without_remote_but_keeps_full_name() {
+        let entry = remote_entry(&branch("origin/feature/login", 100));
+        assert_eq!(entry.label, "feature/login");
+        assert_eq!(entry.tooltip, "origin/feature/login");
+        assert_eq!(
+            entry.info,
+            SelectedRef {
+                name: "origin/feature/login".to_string(),
+                ref_type: RefType::Remote,
+            }
+        );
+        assert!(filter_matches(&entry.filter_text, "origin/"));
+    }
+
+    #[test]
+    fn stash_entry_shows_message_and_filters_on_name_and_message() {
+        let entry = stash_entry(&StashInfo {
+            name: "stash@{0}".to_string(),
+            message: "WIP on main: fix crash".to_string(),
+            sha: "abc".to_string(),
+            time: Utc.timestamp_opt(100, 0).unwrap(),
+        });
+        assert_eq!(entry.label, "WIP on main: fix crash");
+        assert_eq!(entry.tooltip, "stash@{0}: WIP on main: fix crash");
+        assert_eq!(entry.info.name, "stash@{0}");
+        assert!(filter_matches(&entry.filter_text, "stash@{0}"));
+        assert!(filter_matches(&entry.filter_text, "fix crash"));
+    }
+
+    #[test]
+    fn group_remote_branches_groups_by_remote_newest_first() {
+        let groups = group_remote_branches(&[
+            branch("upstream/main", 100),
+            branch("origin/old", 100),
+            branch("origin/new", 300),
+            branch("no-remote", 200),
+        ]);
+        let names: Vec<(&str, Vec<&str>)> = groups
+            .iter()
+            .map(|(remote, branches)| {
+                (
+                    remote.as_str(),
+                    branches.iter().map(|b| b.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("origin", vec!["origin/new", "origin/old"]),
+                ("upstream", vec!["upstream/main"]),
+            ]
+        );
     }
 
     fn ago_days(days: i64) -> String {
