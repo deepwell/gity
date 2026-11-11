@@ -56,7 +56,7 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
     let ui_for_ref_select = ui.clone();
     let state_for_ref_select = app_state.clone();
     ui.repo_view
-        .branch_panel
+        .ref_panel
         .on_ref_selected(move |ref_name, ref_type| {
             // Avoid redundant reloads when selection changes programmatically.
             let current_ref = state_for_ref_select.current_ref.borrow();
@@ -75,12 +75,12 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
             );
         });
 
-    // Create/delete requests from the branch panel's header buttons and context menus.
+    // Create/delete requests from the ref panel's header buttons and context menus.
     let window_for_ref_action = window.clone();
     let ui_for_ref_action = ui.clone();
     let state_for_ref_action = app_state.clone();
     ui.repo_view
-        .branch_panel
+        .ref_panel
         .on_ref_action(move |action| match action {
             RefAction::NewBranch => ref_ops::show_create_dialog(
                 &window_for_ref_action,
@@ -219,14 +219,16 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
     // Create horizontal paned to hold side panel and main content (allows resizing)
     let horizontal_paned = ui.repo_view.horizontal_paned.clone();
 
-    // Restore branch panel width from GSettings
-    let branch_panel_width = settings.int("branch-panel-width");
-    horizontal_paned.set_position(branch_panel_width);
+    // Restore ref panel width from GSettings. The key is still named
+    // `branch-panel-width` from before the panel was renamed to `RefPanel`;
+    // it keeps that name so users' saved widths carry over.
+    let ref_panel_width = settings.int("branch-panel-width");
+    horizontal_paned.set_position(ref_panel_width);
 
-    // Save branch panel width when it changes
-    let settings_for_branch_panel = settings.clone();
+    // Save ref panel width when it changes
+    let settings_for_ref_panel = settings.clone();
     horizontal_paned.connect_position_notify(move |paned| {
-        let _ = settings_for_branch_panel.set_int("branch-panel-width", paned.position());
+        let _ = settings_for_ref_panel.set_int("branch-panel-width", paned.position());
     });
 
     // Restore changed-files column width from GSettings

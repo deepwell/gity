@@ -1,27 +1,27 @@
 /* BRANCH_PANEL */
-.branch-panel {
+.ref-panel {
     background-color: @view_bg_color;
 }
 
-/* Branch panel section headers. The list row adds 2px of padding on each
+/* Ref panel section headers. The list row adds 2px of padding on each
    side, so the header matches a GtkExpander title with 8px of padding. */
-.branch-panel-expander-label {
+.ref-panel-expander-label {
     padding: 6px 12px;
     border-radius: 6px;
 }
 
 /* Dim the chevron like a GtkExpander's until the header is hovered */
-.branch-panel-header > treeexpander > expander {
+.ref-panel-header > treeexpander > expander {
     opacity: .7;
 }
 
-.branch-panel-header:hover > treeexpander > expander {
+.ref-panel-header:hover > treeexpander > expander {
     opacity: 1;
 }
 
 /* "+" buttons in the Branches/Tags headers; kept compact so they don't
    make the header taller. */
-.branch-panel-header-button {
+.ref-panel-header-button {
     min-width: 0;
     min-height: 0;
     padding: 2px;

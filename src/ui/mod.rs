@@ -3,22 +3,22 @@
 //! This module contains reusable UI components that are used throughout
 //! the application.
 
-pub mod branch_panel;
 pub mod commit_list;
 pub mod copy_on_hover;
 pub mod diff_file_tree;
 pub mod grid_cell;
 pub mod image_diff;
 pub mod placeholder;
+pub mod ref_panel;
 pub mod repo_view;
 pub mod styles;
 pub mod welcome_view;
 pub mod window;
 
-pub use branch_panel::{BranchPanel, RefAction, RefType};
 pub use commit_list::{CommitList, CommitLoadRequest, CommitPagingState};
 pub use diff_file_tree::{DiffFileTree, FileSummary};
 pub use grid_cell::{Entry, GridCell};
+pub use ref_panel::{RefAction, RefPanel, RefType};
 pub use repo_view::RepoView;
 pub use welcome_view::WelcomeView;
 pub use window::{build_ui, setup_app_action, setup_shortcuts};

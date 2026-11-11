@@ -153,7 +153,7 @@ pub fn load_repo_with_selection(
         },
     );
 
-    // Load branches and tags for the branch panel
+    // Load branches and tags for the ref panel
     let branches = match git::get_local_branches(path.to_str().unwrap()) {
         Ok(b) => b,
         Err(e) => {
@@ -186,7 +186,7 @@ pub fn load_repo_with_selection(
         }
     };
 
-    ui.repo_view.branch_panel.update_refs(
+    ui.repo_view.ref_panel.update_refs(
         &branches,
         &remote_branches,
         &tags,
@@ -194,7 +194,7 @@ pub fn load_repo_with_selection(
         checked_out_branch.as_deref(),
         Some(&effective_ref),
     );
-    let _ = ui.repo_view.branch_panel.select_ref(&effective_ref);
+    let _ = ui.repo_view.ref_panel.select_ref(&effective_ref);
 
     state.notify_repo_changed();
 }
@@ -546,9 +546,9 @@ pub fn reset_for_repo_switch(ui: &WindowUi, state: &AppState) {
 fn reset_repo_view(ui: &WindowUi) {
     ui.repo_view.commit_list.clear();
     ui.repo_view
-        .branch_panel
+        .ref_panel
         .update_refs(&[], &[], &[], &[], None, None);
-    ui.repo_view.branch_panel.hide_filter();
+    ui.repo_view.ref_panel.hide_filter();
 
     ui.repo_view.search_bar.set_search_mode(false);
     ui.repo_view.search_entry.set_text("");

@@ -71,13 +71,13 @@ pub fn install(window: &gtk::ApplicationWindow, ui: &WindowUi, state: &AppState)
     let action_find_next = search_controller.action_find_next(ui, state);
     let action_find_previous = search_controller.action_find_previous(ui, state);
 
-    // Filter the branch panel's branches, tags and stashes by name
-    let branch_panel_for_filter = ui.repo_view.branch_panel.clone();
+    // Filter the ref panel's branches, tags and stashes by name
+    let ref_panel_for_filter = ui.repo_view.ref_panel.clone();
     let state_for_filter = state.clone();
     let action_show_ref_filter = ActionEntry::builder("show-ref-filter")
         .activate(move |_, _, _| {
             if state_for_filter.is_repo_loaded() {
-                branch_panel_for_filter.show_filter();
+                ref_panel_for_filter.show_filter();
             }
         })
         .build();

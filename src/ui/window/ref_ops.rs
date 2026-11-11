@@ -1,11 +1,11 @@
 //! Dialogs for creating branches and tags and for deleting branches, tags,
-//! and stashes. Requests come from the branch panel (see `RefAction`).
+//! and stashes. Requests come from the ref panel (see `RefAction`).
 
 use adw::prelude::*;
 
 use crate::git::{self, NewRefKind};
 use crate::ui::RefType;
-use crate::ui::branch_panel::sort_tags;
+use crate::ui::ref_panel::sort_tags;
 
 use super::APP_NAME;
 use super::repo;
@@ -282,7 +282,7 @@ enum Neighbor {
     Stash(String),
 }
 
-/// The tag or stash listed after `name` in the branch panel (or before it,
+/// The tag or stash listed after `name` in the ref panel (or before it,
 /// when it is last), or `None` if it is the only one or a branch.
 fn neighbor_ref(
     path: &std::path::Path,

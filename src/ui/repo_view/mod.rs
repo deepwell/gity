@@ -7,7 +7,7 @@ use gtk::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::ui::{BranchPanel, CommitList, CommitPagingState, DiffFileTree, copy_on_hover};
+use crate::ui::{CommitList, CommitPagingState, DiffFileTree, RefPanel, copy_on_hover};
 
 /// Minimum app width at which the changed-files column is shown beside the diff.
 const FILE_TREE_MIN_APP_WIDTH: f64 = 1400.0;
@@ -28,7 +28,7 @@ pub struct RepoView {
     pub last_search_status: Rc<RefCell<String>>,
 
     // Panels
-    pub branch_panel: BranchPanel,
+    pub ref_panel: RefPanel,
     pub commit_list: CommitList,
     pub commit_paging_state: Rc<RefCell<CommitPagingState>>,
 
@@ -234,8 +234,8 @@ impl RepoView {
         let commit_list = CommitList::new();
         let commit_paging_state = commit_list.paging_state();
 
-        let branch_panel = BranchPanel::new(&[]);
-        let side_panel = branch_panel.widget.clone();
+        let ref_panel = RefPanel::new(&[]);
+        let side_panel = ref_panel.widget.clone();
 
         // Diff UI
         let diff_files_box = gtk::Box::builder()
@@ -629,7 +629,7 @@ impl RepoView {
             search_spinner,
             search_status_label,
             last_search_status,
-            branch_panel,
+            ref_panel,
             commit_list,
             commit_paging_state,
             diff_files_box,

@@ -21,10 +21,13 @@
       <summary>Diff paned position</summary>
       <description>The position of the divider between commit list and diff view</description>
     </key>
+    <!-- The width of the RefPanel (the left sidebar of branches, tags,
+         stashes and remotes). Named before the panel was renamed from
+         BranchPanel; kept as is so saved widths carry over. -->
     <key name="branch-panel-width" type="i">
       <default>200</default>
-      <summary>Branch panel width</summary>
-      <description>The width of the branch panel</description>
+      <summary>Ref panel width</summary>
+      <description>The width of the ref panel listing branches, tags, stashes and remotes</description>
     </key>
     <key name="diff-file-tree-width" type="i">
       <default>300</default>
@@ -54,22 +57,22 @@
     <key name="branches-expanded" type="b">
       <default>true</default>
       <summary>Branches section expanded</summary>
-      <description>Whether the branches section is expanded in the branch panel</description>
+      <description>Whether the branches section is expanded in the ref panel</description>
     </key>
     <key name="tags-expanded" type="b">
       <default>true</default>
       <summary>Tags section expanded</summary>
-      <description>Whether the tags section is expanded in the branch panel</description>
+      <description>Whether the tags section is expanded in the ref panel</description>
     </key>
     <key name="stashes-expanded" type="b">
       <default>true</default>
       <summary>Stashes section expanded</summary>
-      <description>Whether the stashes section is expanded in the branch panel</description>
+      <description>Whether the stashes section is expanded in the ref panel</description>
     </key>
     <key name="remotes-expanded" type="b">
       <default>true</default>
       <summary>Remotes section expanded</summary>
-      <description>Whether the remotes section is expanded in the branch panel</description>
+      <description>Whether the remotes section is expanded in the ref panel</description>
     </key>
   </schema>
 </schemalist>

@@ -1,6 +1,6 @@
-//! Branch panel UI component for displaying and selecting git branches and tags.
+//! Ref panel UI component for displaying and selecting git refs.
 //!
-//! This module provides the `BranchPanel` widget which displays a list of
+//! This module provides the `RefPanel` widget which displays a list of
 //! git branches, tags, stashes, and remote-tracking branches with their last commit time and
 //! allows single-selection. All sections are collapsible with state persisted
 //! to gsettings. A filter bar (hidden until requested) narrows every section
@@ -165,7 +165,7 @@ struct SectionModel {
 /// A filter bar above the sections (see `show_filter`) hides the refs that do
 /// not match the typed text.
 #[derive(Clone)]
-pub struct BranchPanel {
+pub struct RefPanel {
     /// The root widget container
     pub widget: gtk::Box,
     inner: Rc<Inner>,
@@ -216,8 +216,8 @@ struct Inner {
     batching: Cell<bool>,
 }
 
-impl BranchPanel {
-    /// Create a new BranchPanel with the given branches.
+impl RefPanel {
+    /// Create a new RefPanel with the given branches.
     ///
     /// # Arguments
     /// * `branches` - Slice of branch information to display
@@ -349,7 +349,7 @@ impl Inner {
 
         let side_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(["branch-panel"])
+            .css_classes(["ref-panel"])
             .build();
         side_panel.set_width_request(150);
 
@@ -470,7 +470,7 @@ impl Inner {
         });
 
         let list_view = gtk::ListView::new(Some(selection.clone()), Some(factory));
-        list_view.add_css_class("branch-panel-list");
+        list_view.add_css_class("ref-panel-list");
         let scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -1072,7 +1072,7 @@ fn stash_entry(stash: &StashInfo) -> RefEntry {
 fn build_header_row(panel: Weak<Inner>, list_item: &gtk::ListItem) -> gtk::Box {
     let header = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .css_classes(["branch-panel-header"])
+        .css_classes(["ref-panel-header"])
         .build();
 
     // Only draws the chevron; the header's click gesture does the toggling,
@@ -1087,7 +1087,7 @@ fn build_header_row(panel: Weak<Inner>, list_item: &gtk::ListItem) -> gtk::Box {
 
     let label_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .css_classes(["branch-panel-expander-label"])
+        .css_classes(["ref-panel-expander-label"])
         .build();
     let title = gtk::Label::builder().halign(gtk::Align::Start).build();
     title.add_css_class("heading");
@@ -1292,7 +1292,7 @@ fn append_header_button(label_box: &gtk::Box) {
         .halign(gtk::Align::End)
         .hexpand(true)
         .valign(gtk::Align::Center)
-        .css_classes(["flat", "branch-panel-header-button"])
+        .css_classes(["flat", "ref-panel-header-button"])
         .build();
     label_box.append(&button);
 }
