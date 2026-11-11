@@ -12,8 +12,6 @@ use std::str;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::logger::Logger;
-
 /// Kind of change for one file in a commit/range diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileChangeKind {
@@ -749,9 +747,6 @@ pub fn get_repo_tags(path: &Path) -> Result<RepoTags, Error> {
     for names in by_commit.values_mut() {
         names.sort();
     }
-
-    let tag_count: usize = by_commit.values().map(|v| v.len()).sum();
-    Logger::info(&format!("Found {} tags in ({})", tag_count, path.display()));
 
     Ok(RepoTags { by_commit, list })
 }
