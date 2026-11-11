@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,6 +19,9 @@ pub struct AppState {
     pub tokio_runtime: Arc<Runtime>,
     /// `git::repo_state_fingerprint` of the repository as last loaded.
     pub loaded_fingerprint: Rc<RefCell<Option<u64>>>,
+    /// Counts repository loads (and closes), so work a load started in the
+    /// background can tell whether its result is still wanted.
+    load_generation: Rc<Cell<u64>>,
     /// Called whenever a repository is loaded or closed.
     repo_listener: Rc<RefCell<Option<RepoListener>>>,
 }
@@ -36,6 +39,7 @@ impl AppState {
             file_portal_active: Rc::new(RefCell::new(false)),
             tokio_runtime: Arc::new(runtime),
             loaded_fingerprint: Rc::new(RefCell::new(None)),
+            load_generation: Rc::new(Cell::new(0)),
             repo_listener: Rc::new(RefCell::new(None)),
         }
     }
@@ -45,7 +49,21 @@ impl AppState {
         *self.current_ref.borrow_mut() = None;
         *self.current_ref_type.borrow_mut() = None;
         *self.loaded_fingerprint.borrow_mut() = None;
+        self.begin_load();
         self.notify_repo_changed();
+    }
+
+    /// Start a new repository load (or a close), making the results of
+    /// earlier loads stale. Returns the new load's generation.
+    pub fn begin_load(&self) -> u64 {
+        let generation = self.load_generation.get() + 1;
+        self.load_generation.set(generation);
+        generation
+    }
+
+    /// Whether `generation` is still the latest load.
+    pub fn is_current_load(&self, generation: u64) -> bool {
+        self.load_generation.get() == generation
     }
 
     pub fn set_repo_listener(&self, listener: Option<RepoListener>) {

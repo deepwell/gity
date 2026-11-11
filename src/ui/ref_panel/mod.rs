@@ -228,18 +228,19 @@ impl RefPanel {
             widget: inner.widget.clone(),
             inner,
         };
-        panel.update_refs(branches, &[], &[], &[], None, None);
+        panel.update_refs(branches, &[], &[], None, None);
         panel
     }
 
-    /// Update the panel with new lists of branches, remote branches, tags, and stashes.
+    /// Update the panel with new lists of branches, remote branches, and stashes.
+    /// Tags are listed separately by `set_tags`, since they load in the
+    /// background; the current tags stay listed until then.
     ///
     /// Attempts to preserve the current selection if possible.
     pub fn update_refs(
         &self,
         branches: &[BranchInfo],
         remote_branches: &[BranchInfo],
-        tags: &[TagInfo],
         stashes: &[StashInfo],
         checked_out_branch: Option<&str>,
         current_ref_name: Option<&str>,
@@ -255,10 +256,6 @@ impl RefPanel {
                 sort_branches(branches)
                     .iter()
                     .map(|b| PanelItem::Ref(branch_entry(b, checked_out_branch))),
-            );
-            replace_items(
-                &inner.section(Section::Tags).store,
-                sort_tags(tags).iter().map(|t| PanelItem::Ref(tag_entry(t))),
             );
             replace_items(
                 &inner.section(Section::Stashes).store,
@@ -294,6 +291,21 @@ impl RefPanel {
             inner.ensure_default_selection();
 
             // The rows changed, so section visibility must be recomputed.
+            inner.apply_filter();
+        });
+    }
+
+    /// Replace the listed tags, keeping the selection. If the selected ref was
+    /// a tag that is gone, the default ref is selected instead.
+    pub fn set_tags(&self, tags: &[TagInfo]) {
+        let inner = &self.inner;
+        inner.batch(|| {
+            replace_items(
+                &inner.section(Section::Tags).store,
+                sort_tags(tags).iter().map(|t| PanelItem::Ref(tag_entry(t))),
+            );
+            inner.ensure_default_selection();
+            // The Tags section's visibility under the filter may have changed.
             inner.apply_filter();
         });
     }

@@ -4,6 +4,7 @@ use git2::{
     DiffOptions, Error, FileMode, ObjectType, Oid, Pathspec, Repository, Signature, StatusOptions,
     Time,
 };
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -693,13 +694,24 @@ pub struct TagInfo {
     pub commit_time: DateTime<Utc>,
 }
 
-/// Returns a list of all tags in the repository with their commit times.
-///
-/// Tags are returned with the tag name and the time of the commit they point to.
-/// For annotated tags, this is the time of the tagged commit (not the tag creation time).
-pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
+/// Every tag in the repository, read in one pass.
+pub struct RepoTags {
+    /// Commit SHA to the names of the tags on it, sorted. Annotated tags are
+    /// peeled to their commit; a tag that doesn't lead to a commit is keyed
+    /// by its own target.
+    pub by_commit: HashMap<String, Vec<String>>,
+    /// The tags that lead to a commit, with that commit's time. For an
+    /// annotated tag this is the tagged commit's time, not the tag's.
+    pub list: Vec<TagInfo>,
+}
+
+/// Reads every tag once, for both the commit list's tag chips and the ref
+/// panel's Tags section. Peeling each tag to its commit is the slow part in
+/// a repository with many tags, so it is done once for both.
+pub fn get_repo_tags(path: &Path) -> Result<RepoTags, Error> {
     let repo = Repository::open(path)?;
-    let mut tag_infos = Vec::new();
+    let mut by_commit: HashMap<String, Vec<String>> = HashMap::new();
+    let mut list = Vec::new();
 
     repo.tag_foreach(|oid, name_bytes| {
         // Tag names come as "refs/tags/tagname" - extract just the tag name
@@ -713,19 +725,40 @@ pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
             return true; // continue iteration
         }
 
-        // Resolve the tag to its target commit and get commit time
-        if let Ok(obj) = repo.find_object(oid, None) {
-            if let Ok(commit) = obj.peel_to_commit() {
-                let commit_time = git_time_to_utc(commit.time());
-
-                tag_infos.push(TagInfo { name, commit_time });
-            }
+        // A lightweight tag points at its commit; an annotated one is peeled.
+        let commit = repo
+            .find_object(oid, None)
+            .and_then(|obj| obj.peel_to_commit())
+            .ok();
+        let key = commit.as_ref().map_or(oid, |commit| commit.id());
+        by_commit
+            .entry(key.to_string())
+            .or_default()
+            .push(name.clone());
+        if let Some(commit) = commit {
+            list.push(TagInfo {
+                name,
+                commit_time: git_time_to_utc(commit.time()),
+            });
         }
 
         true // continue iteration
     })?;
 
-    Ok(tag_infos)
+    // Sort tags alphabetically within each commit for consistent display
+    for names in by_commit.values_mut() {
+        names.sort();
+    }
+
+    let tag_count: usize = by_commit.values().map(|v| v.len()).sum();
+    Logger::info(&format!("Found {} tags in ({})", tag_count, path.display()));
+
+    Ok(RepoTags { by_commit, list })
+}
+
+/// Returns a list of all tags in the repository with their commit times.
+pub fn get_tag_list(path: &Path) -> Result<Vec<TagInfo>, Error> {
+    get_repo_tags(path).map(|tags| tags.list)
 }
 
 #[derive(Clone)]
@@ -1097,60 +1130,6 @@ pub fn get_branch_upstream(path: &Path, branch_ref: &str) -> Option<(String, Str
     let sha = commit.id().to_string();
 
     Some((upstream_name, sha))
-}
-
-/// Returns a mapping from commit SHA to tag names for all tags in the repository.
-///
-/// The returned HashMap maps full commit SHA strings to vectors of tag names
-/// that point to that commit (either directly or through tag objects).
-pub fn get_tags(path: &Path) -> Result<std::collections::HashMap<String, Vec<String>>, Error> {
-    use std::collections::HashMap;
-
-    let repo = Repository::open(path)?;
-    let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
-
-    repo.tag_foreach(|oid, name_bytes| {
-        // Tag names come as "refs/tags/tagname" - extract just the tag name
-        let name = str::from_utf8(name_bytes)
-            .ok()
-            .and_then(|s| s.strip_prefix("refs/tags/"))
-            .unwrap_or_else(|| str::from_utf8(name_bytes).unwrap_or(""))
-            .to_string();
-
-        if name.is_empty() {
-            return true; // continue iteration
-        }
-
-        // Resolve the tag to its target commit
-        // For lightweight tags, oid is the commit directly
-        // For annotated tags, we need to peel to the commit
-        let commit_oid = if let Ok(obj) = repo.find_object(oid, None) {
-            if let Ok(commit) = obj.peel_to_commit() {
-                commit.id()
-            } else {
-                oid
-            }
-        } else {
-            oid
-        };
-
-        tag_map
-            .entry(commit_oid.to_string())
-            .or_default()
-            .push(name);
-
-        true // continue iteration
-    })?;
-
-    // Sort tags alphabetically within each commit for consistent display
-    for tags in tag_map.values_mut() {
-        tags.sort();
-    }
-
-    let tag_count: usize = tag_map.values().map(|v| v.len()).sum();
-    Logger::info(&format!("Found {} tags in ({})", tag_count, path.display()));
-
-    Ok(tag_map)
 }
 
 /// Kind of ref the user can create from the UI.
@@ -1826,7 +1805,7 @@ mod tests {
         assert_eq!(tag.message(), Some("Release"));
         assert_eq!(tag.target_id(), tip);
 
-        let tags = get_tags(tr.path()).unwrap();
+        let tags = get_repo_tags(tr.path()).unwrap().by_commit;
         assert_eq!(
             tags.get(&tip.to_string()),
             Some(&vec!["annotated".to_string(), "light".to_string()])
@@ -1855,6 +1834,32 @@ mod tests {
         delete_tag(tr.path(), "light").unwrap();
         delete_tag(tr.path(), "annotated").unwrap();
         assert!(get_tag_list(tr.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn repo_tags_list_only_tags_that_lead_to_a_commit() {
+        let mut tr = TestRepo::new();
+        let tip = tr.commit("base");
+        tr.lightweight_tag("light", tip);
+        tr.annotated_tag("annotated", tip, "Release");
+        let tree = tr.repo().find_commit(tip).unwrap().tree().unwrap();
+        tr.repo()
+            .tag_lightweight("tree", tree.as_object(), false)
+            .unwrap();
+
+        let tags = get_repo_tags(tr.path()).unwrap();
+        let mut listed: Vec<&str> = tags.list.iter().map(|t| t.name.as_str()).collect();
+        listed.sort();
+        assert_eq!(listed, ["annotated", "light"]);
+        assert_eq!(
+            tags.by_commit.get(&tip.to_string()),
+            Some(&vec!["annotated".to_string(), "light".to_string()])
+        );
+        // A tag of a tree still gets a chip entry, keyed by the tree.
+        assert_eq!(
+            tags.by_commit.get(&tree.id().to_string()),
+            Some(&vec!["tree".to_string()])
+        );
     }
 
     #[test]

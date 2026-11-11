@@ -102,10 +102,15 @@ pub struct CommitList {
     branch_head: Rc<RefCell<Option<(String, String)>>>,
     /// Viewed stash: (stash_name, commit_sha) to show a chip on the stash commit.
     stash_head: Rc<RefCell<Option<(String, String)>>>,
+    /// Rows whose message cell is bound, so their chips can be updated in place.
+    bound_message_cells: BoundCells,
     /// Handler for "New Branch…"/"New Tag…" in a commit's context menu (set
     /// via `on_create_ref`).
     create_ref_handler: CreateRefHandler,
 }
+
+/// The list items whose message cell is currently bound.
+type BoundCells = Rc<RefCell<Vec<gtk::ListItem>>>;
 
 /// The registered create handler, shared with the context menu's actions.
 type CreateRefHandler = Rc<RefCell<Option<Rc<dyn Fn(NewRefKind, String)>>>>;
@@ -125,6 +130,7 @@ impl CommitList {
         let upstream: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let branch_head: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let stash_head: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
+        let bound_message_cells: BoundCells = Rc::new(RefCell::new(Vec::new()));
         let create_ref_handler: CreateRefHandler = Rc::new(RefCell::new(None));
         let on_context_click = install_context_menu(&column_view, &create_ref_handler);
 
@@ -136,6 +142,7 @@ impl CommitList {
             upstream.clone(),
             branch_head.clone(),
             stash_head.clone(),
+            bound_message_cells.clone(),
             on_context_click.clone(),
         );
         let author_column = create_column(
@@ -188,6 +195,7 @@ impl CommitList {
             upstream,
             branch_head,
             stash_head,
+            bound_message_cells,
             create_ref_handler,
         }
     }
@@ -244,41 +252,43 @@ impl CommitList {
     /// * `new_tags` - HashMap mapping commit SHA to list of tag names
     pub fn set_tags(&self, new_tags: HashMap<String, Vec<String>>) {
         *self.tags.borrow_mut() = new_tags;
-        // Trigger rebind of visible items to show tags.
-        // This is safe because tag chips are pre-allocated (not dynamically added/removed).
-        let n_items = self.store.n_items();
-        if n_items > 0 {
-            self.store.items_changed(0, n_items, n_items);
-        }
+        self.refresh_chips();
     }
 
     /// Set the upstream branch for the current ref. When set, a chip is shown on the commit
     /// where the upstream points. Pass `None` to hide the upstream chip.
     pub fn set_upstream(&self, upstream: Option<(String, String)>) {
         *self.upstream.borrow_mut() = upstream;
-        let n_items = self.store.n_items();
-        if n_items > 0 {
-            self.store.items_changed(0, n_items, n_items);
-        }
+        self.refresh_chips();
     }
 
     /// Set the primary branch head. When set, a chip (e.g. "main") is shown on the commit
     /// where that branch currently points. Pass `None` to hide the chip.
     pub fn set_branch_head(&self, branch_head: Option<(String, String)>) {
         *self.branch_head.borrow_mut() = branch_head;
-        let n_items = self.store.n_items();
-        if n_items > 0 {
-            self.store.items_changed(0, n_items, n_items);
-        }
+        self.refresh_chips();
     }
 
     /// Set the viewed stash. When set, a chip (e.g. "stash@{0}") is shown on the
     /// stash commit. Pass `None` to hide the chip.
     pub fn set_stash_head(&self, stash_head: Option<(String, String)>) {
         *self.stash_head.borrow_mut() = stash_head;
-        let n_items = self.store.n_items();
-        if n_items > 0 {
-            self.store.items_changed(0, n_items, n_items);
+        self.refresh_chips();
+    }
+
+    /// Update the chips of the rows on screen. Tags can arrive after the
+    /// commits, so this must not disturb the selection or scroll position,
+    /// as signalling every row as changed would.
+    fn refresh_chips(&self) {
+        let cells = self.bound_message_cells.borrow().clone();
+        for cell in &cells {
+            bind_message_cell(
+                cell,
+                &self.tags,
+                &self.upstream,
+                &self.branch_head,
+                &self.stash_head,
+            );
         }
     }
 
@@ -589,6 +599,7 @@ fn create_stash_chip() -> gtk::Label {
 
 /// Create the message column with branch head, upstream, stash, and tag chip support.
 /// Chips are pre-allocated during setup to avoid GTK state tracking issues.
+#[allow(clippy::too_many_arguments)]
 fn create_message_column_with_tags(
     title: &str,
     width: i32,
@@ -596,6 +607,7 @@ fn create_message_column_with_tags(
     upstream: Rc<RefCell<Option<(String, String)>>>,
     branch_head: Rc<RefCell<Option<(String, String)>>>,
     stash_head: Rc<RefCell<Option<(String, String)>>>,
+    bound_cells: BoundCells,
     on_context_click: ContextClickHandler,
 ) -> gtk::ColumnViewColumn {
     let factory = gtk::SignalListItemFactory::new();
@@ -637,93 +649,19 @@ fn create_message_column_with_tags(
         item.set_child(Some(&container));
     });
 
-    let tags_for_bind = tags.clone();
-    let upstream_for_bind = upstream.clone();
-    let branch_head_for_bind = branch_head.clone();
-    let stash_head_for_bind = stash_head.clone();
+    let bound_for_bind = bound_cells.clone();
     factory.connect_bind(move |_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let container = item.child().and_downcast::<gtk::Box>().unwrap();
-        let entry_obj = item.item().and_downcast::<glib::BoxedAnyObject>().unwrap();
-        let commit: Ref<GitCommit> = entry_obj.borrow();
-
-        let tags_map = tags_for_bind.borrow();
-        let commit_tags = tags_map.get(&commit.id);
-        let upstream_opt = upstream_for_bind.borrow().clone();
-        let branch_head_opt = branch_head_for_bind.borrow().clone();
-        let stash_head_opt = stash_head_for_bind.borrow().clone();
-
-        let mut chip_index = 0;
-        let mut child = container.first_child();
-        while let Some(widget) = child {
-            if widget.widget_name() == "branch-chip" {
-                if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
-                    if let Some((ref name, ref sha)) = branch_head_opt {
-                        if commit.id == *sha {
-                            chip.set_label(name);
-                            chip.set_visible(true);
-                        } else {
-                            chip.set_visible(false);
-                        }
-                    } else {
-                        chip.set_visible(false);
-                    }
-                }
-            } else if widget.widget_name() == "upstream-chip" {
-                if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
-                    if let Some((ref_name, sha)) = upstream_opt.as_ref() {
-                        if commit.id == *sha {
-                            chip.set_label(ref_name);
-                            chip.set_visible(true);
-                        } else {
-                            chip.set_visible(false);
-                        }
-                    } else {
-                        chip.set_visible(false);
-                    }
-                }
-            } else if widget.widget_name() == "stash-chip" {
-                if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
-                    match stash_head_opt.as_ref() {
-                        Some((name, sha)) if commit.id == *sha => {
-                            chip.set_label(name);
-                            chip.set_visible(true);
-                        }
-                        _ => chip.set_visible(false),
-                    }
-                }
-            } else if widget.widget_name() == "tag-chip" {
-                if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
-                    if let Some(tags) = commit_tags {
-                        if chip_index < tags.len() {
-                            chip.set_label(&tags[chip_index]);
-                            chip.set_visible(true);
-                        } else {
-                            chip.set_visible(false);
-                        }
-                    } else {
-                        chip.set_visible(false);
-                    }
-                    chip_index += 1;
-                }
-            } else if widget.widget_name() == "commit-message" {
-                // Set the message text
-                if let Some(label) = widget.downcast_ref::<gtk::Inscription>() {
-                    let first_line = commit.message.lines().next().unwrap_or("").trim();
-                    label.set_text(Some(first_line));
-                    if commit.is_worktree() {
-                        label.add_css_class("uncommitted-changes");
-                    } else {
-                        label.remove_css_class("uncommitted-changes");
-                    }
-                }
-            }
-            child = widget.next_sibling();
+        bind_message_cell(item, &tags, &upstream, &branch_head, &stash_head);
+        let mut bound = bound_for_bind.borrow_mut();
+        if !bound.contains(item) {
+            bound.push(item.clone());
         }
     });
 
-    factory.connect_unbind(|_factory, item| {
+    factory.connect_unbind(move |_factory, item| {
         let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        bound_cells.borrow_mut().retain(|bound| bound != item);
         if let Some(container) = item.child().and_downcast::<gtk::Box>() {
             let mut child = container.first_child();
             while let Some(widget) = child {
@@ -745,6 +683,93 @@ fn create_message_column_with_tags(
     column.set_fixed_width(width);
     column.set_expand(true);
     column
+}
+
+/// Fill a message cell: its chips and the message's first line.
+fn bind_message_cell(
+    item: &gtk::ListItem,
+    tags: &RefCell<HashMap<String, Vec<String>>>,
+    upstream: &RefCell<Option<(String, String)>>,
+    branch_head: &RefCell<Option<(String, String)>>,
+    stash_head: &RefCell<Option<(String, String)>>,
+) {
+    let container = item.child().and_downcast::<gtk::Box>().unwrap();
+    let entry_obj = item.item().and_downcast::<glib::BoxedAnyObject>().unwrap();
+    let commit: Ref<GitCommit> = entry_obj.borrow();
+
+    let tags_map = tags.borrow();
+    let commit_tags = tags_map.get(&commit.id);
+    let upstream_opt = upstream.borrow().clone();
+    let branch_head_opt = branch_head.borrow().clone();
+    let stash_head_opt = stash_head.borrow().clone();
+
+    let mut chip_index = 0;
+    let mut child = container.first_child();
+    while let Some(widget) = child {
+        if widget.widget_name() == "branch-chip" {
+            if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
+                if let Some((ref name, ref sha)) = branch_head_opt {
+                    if commit.id == *sha {
+                        chip.set_label(name);
+                        chip.set_visible(true);
+                    } else {
+                        chip.set_visible(false);
+                    }
+                } else {
+                    chip.set_visible(false);
+                }
+            }
+        } else if widget.widget_name() == "upstream-chip" {
+            if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
+                if let Some((ref_name, sha)) = upstream_opt.as_ref() {
+                    if commit.id == *sha {
+                        chip.set_label(ref_name);
+                        chip.set_visible(true);
+                    } else {
+                        chip.set_visible(false);
+                    }
+                } else {
+                    chip.set_visible(false);
+                }
+            }
+        } else if widget.widget_name() == "stash-chip" {
+            if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
+                match stash_head_opt.as_ref() {
+                    Some((name, sha)) if commit.id == *sha => {
+                        chip.set_label(name);
+                        chip.set_visible(true);
+                    }
+                    _ => chip.set_visible(false),
+                }
+            }
+        } else if widget.widget_name() == "tag-chip" {
+            if let Some(chip) = widget.downcast_ref::<gtk::Label>() {
+                if let Some(tags) = commit_tags {
+                    if chip_index < tags.len() {
+                        chip.set_label(&tags[chip_index]);
+                        chip.set_visible(true);
+                    } else {
+                        chip.set_visible(false);
+                    }
+                } else {
+                    chip.set_visible(false);
+                }
+                chip_index += 1;
+            }
+        } else if widget.widget_name() == "commit-message" {
+            // Set the message text
+            if let Some(label) = widget.downcast_ref::<gtk::Inscription>() {
+                let first_line = commit.message.lines().next().unwrap_or("").trim();
+                label.set_text(Some(first_line));
+                if commit.is_worktree() {
+                    label.add_css_class("uncommitted-changes");
+                } else {
+                    label.remove_css_class("uncommitted-changes");
+                }
+            }
+        }
+        child = widget.next_sibling();
+    }
 }
 
 /// Set up infinite scroll behavior on the scrolled window.

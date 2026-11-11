@@ -72,6 +72,12 @@ pub fn load_repo_with_selection(
     // still differs from it and triggers another auto-refresh.
     *state.loaded_fingerprint.borrow_mut() = git::repo_state_fingerprint(&path).ok();
 
+    // Reading every tag takes a while in a repository with many of them
+    // (~50 ms for the Linux kernel's ~900), so it runs in the background
+    // while the commits load, and the tags fill in when it finishes.
+    let generation = state.begin_load();
+    load_tags_in_background(ui, state, path.clone(), generation);
+
     // Commits (and the first-commit diff) load asynchronously. Start from a
     // blank diff so a leftover empty-state placeholder cannot flash during
     // the welcome→repo crossfade.
@@ -109,14 +115,6 @@ pub fn load_repo_with_selection(
         .unwrap_or_else(|| path.to_str().unwrap_or("Unknown"));
     ui.set_repo_title(folder_name, &effective_ref);
 
-    // Load tags for commit list display (SHA -> tag names mapping)
-    match git::get_tags(&path) {
-        Ok(tags) => {
-            ui.repo_view.commit_list.set_tags(tags);
-        }
-        Err(e) => Logger::error(&format!("Error loading tags: {}", e)),
-    }
-
     // Show upstream chip on the commit where the upstream branch points (if any)
     ui.repo_view
         .commit_list
@@ -153,7 +151,7 @@ pub fn load_repo_with_selection(
         },
     );
 
-    // Load branches and tags for the ref panel
+    // Load branches and stashes for the ref panel (tags load in the background)
     let branches = match git::get_local_branches(path.to_str().unwrap()) {
         Ok(b) => b,
         Err(e) => {
@@ -170,14 +168,6 @@ pub fn load_repo_with_selection(
         }
     };
 
-    let tags = match git::get_tag_list(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            Logger::error(&format!("Error reading tags: {}", e));
-            Vec::new()
-        }
-    };
-
     let stashes = match git::get_stash_list(&path) {
         Ok(s) => s,
         Err(e) => {
@@ -189,7 +179,6 @@ pub fn load_repo_with_selection(
     ui.repo_view.ref_panel.update_refs(
         &branches,
         &remote_branches,
-        &tags,
         &stashes,
         checked_out_branch.as_deref(),
         Some(&effective_ref),
@@ -197,6 +186,29 @@ pub fn load_repo_with_selection(
     let _ = ui.repo_view.ref_panel.select_ref(&effective_ref);
 
     state.notify_repo_changed();
+}
+
+/// Read the repository's tags off the main thread, then show them as commit
+/// list chips and in the ref panel, unless another load (or a close) has
+/// started since. Until then the previous tags stay shown, so a refresh
+/// keeps a viewed tag selected and doesn't empty the Tags section.
+fn load_tags_in_background(ui: &WindowUi, state: &AppState, path: PathBuf, generation: u64) {
+    let ui = ui.clone();
+    let state = state.clone();
+    glib::spawn_future_local(async move {
+        let result = gio::spawn_blocking(move || git::get_repo_tags(&path)).await;
+        if !state.is_current_load(generation) {
+            return;
+        }
+        match result {
+            Ok(Ok(tags)) => {
+                ui.repo_view.commit_list.set_tags(tags.by_commit);
+                ui.repo_view.ref_panel.set_tags(&tags.list);
+            }
+            Ok(Err(e)) => Logger::error(&format!("Error loading tags: {}", e)),
+            Err(_) => Logger::error("Loading tags panicked"),
+        }
+    });
 }
 
 /// Switch to a different branch or tag within the same repository.
@@ -547,7 +559,8 @@ fn reset_repo_view(ui: &WindowUi) {
     ui.repo_view.commit_list.clear();
     ui.repo_view
         .ref_panel
-        .update_refs(&[], &[], &[], &[], None, None);
+        .update_refs(&[], &[], &[], None, None);
+    ui.repo_view.ref_panel.set_tags(&[]);
     ui.repo_view.ref_panel.hide_filter();
 
     ui.repo_view.search_bar.set_search_mode(false);
