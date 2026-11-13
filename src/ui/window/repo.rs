@@ -28,7 +28,7 @@ fn stash_head(path: &Path, ref_name: &str) -> Option<(String, String)> {
     git::resolve_ref_sha(path, ref_name).map(|sha| (ref_name.to_string(), sha))
 }
 
-pub fn show_repo_error(window: &gtk::ApplicationWindow, path: &PathBuf, error: &str) {
+pub fn show_repo_error(window: &gtk::ApplicationWindow, path: &Path, error: &str) {
     let dialog = gtk::AlertDialog::builder()
         .message("Not a Git repository")
         .detail(format!(

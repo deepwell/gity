@@ -1,6 +1,6 @@
 use gtk::gio;
 use gtk::prelude::SettingsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::APP_ID;
 use crate::git;
@@ -31,7 +31,7 @@ pub struct RecentRepo {
 }
 
 /// Format a path for display, replacing the home directory with ~/
-fn format_display_path(path: &PathBuf) -> String {
+fn format_display_path(path: &Path) -> String {
     let path_str = path.to_string_lossy();
     if let Some(home_dir) = dirs::home_dir() {
         let home_str = home_dir.to_string_lossy();
@@ -83,7 +83,7 @@ pub fn load_recent_repos() -> Vec<RecentRepo> {
 /// # Arguments
 /// * `sandbox_path` - The path accessible in the sandbox (used for operations)
 /// * `real_path` - The real path (used for display)
-pub fn add_recent_repo(sandbox_path: &PathBuf, real_path: &PathBuf) {
+pub fn add_recent_repo(sandbox_path: &Path, real_path: &Path) {
     let settings = gio::Settings::new(APP_ID);
     let json_str = settings.string("recent-repositories");
 
@@ -118,7 +118,7 @@ pub fn add_recent_repo(sandbox_path: &PathBuf, real_path: &PathBuf) {
 ///
 /// # Arguments
 /// * `path` - The sandbox path to remove (matches against sandbox_path in entries)
-pub fn remove_recent_repo(path: &PathBuf) {
+pub fn remove_recent_repo(path: &Path) {
     let settings = gio::Settings::new(APP_ID);
     let json_str = settings.string("recent-repositories");
 
@@ -140,7 +140,7 @@ pub fn remove_recent_repo(path: &PathBuf) {
 ///
 /// Looks up `sandbox_path` in the recent list to recover `real_path`; if missing,
 /// stores both fields as the same path.
-pub fn save_last_session(sandbox_path: &PathBuf) {
+pub fn save_last_session(sandbox_path: &Path) {
     let settings = gio::Settings::new(APP_ID);
     let sandbox_str = strip_trailing_slash(&sandbox_path.to_string_lossy()).to_string();
 
