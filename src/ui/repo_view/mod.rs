@@ -83,6 +83,21 @@ impl RepoView {
     /// expand/collapse toggle. If `placeholder` is provided, a centered
     /// placeholder (icon + text) is shown in the cleared diff area.
     pub fn reset_diff(&self, placeholder: Option<&str>) {
+        // Removing or hiding a focused widget would hand keyboard focus to an
+        // unrelated widget (or none), e.g. when a refresh reloads the diff
+        // being read. Keep it in the diff pane instead.
+        self.diff_file_tree
+            .clear_keeping_focus(&self.diff_scrolled_window);
+        let focus_in_diff = [
+            self.diff_files_box.upcast_ref::<gtk::Widget>(),
+            self.diff_header.upcast_ref(),
+            self.commit_message_container.upcast_ref(),
+        ]
+        .iter()
+        .any(|w| crate::ui::focus::contains_focus(*w));
+        if focus_in_diff {
+            self.diff_scrolled_window.grab_focus();
+        }
         while let Some(child) = self.diff_files_box.first_child() {
             self.diff_files_box.remove(&child);
         }
@@ -93,7 +108,6 @@ impl RepoView {
                     text,
                 ));
         }
-        self.diff_file_tree.clear();
 
         // Hide the diff header + commit message so the placeholder fills the
         // whole diff view; they're shown again when an actual diff loads.

@@ -6,6 +6,7 @@
 pub mod commit_list;
 pub mod copy_on_hover;
 pub mod diff_file_tree;
+pub mod focus;
 pub mod grid_cell;
 pub mod image_diff;
 pub mod placeholder;

@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use crate::git::{self, GitCommit, NewRefKind};
 use crate::logger::Logger;
-use crate::ui::{Entry, GridCell};
+use crate::ui::{Entry, GridCell, focus};
 
 /// Number of commits to load per page during infinite scroll.
 const COMMIT_PAGE_SIZE: usize = 200;
@@ -70,6 +70,11 @@ pub struct CommitPagingState {
     /// Result of the uncommitted-changes check, which runs alongside the
     /// commit pages: `None` until it reports, then whether the row is shown.
     pub worktree_row: Option<bool>,
+    /// Holds keyboard focus while a reload that started with focus in the
+    /// list is in flight (the list itself, while its rows are gone). Once the
+    /// selection is restored, focus moves to the selected row, unless it has
+    /// moved off this widget in the meantime.
+    focus_keeper: Option<glib::WeakRef<gtk::Widget>>,
 }
 
 /// A scrollable list widget displaying git commits with infinite scroll support.
@@ -347,6 +352,7 @@ impl CommitList {
             st.on_pending_select_missing = None;
             st.first_page_loaded = false;
             st.worktree_row = None;
+            st.focus_keeper = None;
         }
 
         // Clear tags, upstream, branch head, and stash head.
@@ -831,6 +837,62 @@ fn find_commit_index_by_sha(store: &gio::ListStore, sha: &str) -> Option<u32> {
     None
 }
 
+/// Removing the rows makes GTK move keyboard focus elsewhere in the window
+/// (on its next layout) if one of them had it. Hold it on the list itself
+/// instead, so the restored selection can take it back (see
+/// `focus_restored_selection`). Call before the rows are removed.
+fn keep_focus_during_reload(
+    scrolled_window: &gtk::ScrolledWindow,
+    paging_state: &Rc<RefCell<CommitPagingState>>,
+    store: &gio::ListStore,
+) {
+    let had_focus = focus::contains_focus(scrolled_window);
+    // A reload of a reload: focus is already held on the list.
+    let keeper = paging_state.borrow_mut().focus_keeper.take();
+    let keeping = keeper
+        .and_then(|k| k.upgrade())
+        .is_some_and(|k| focus::is_focus(&k));
+    store.remove_all();
+    if !(had_focus || keeping) {
+        return;
+    }
+    let Some(column_view) = scrolled_window.child() else {
+        return;
+    };
+    // With no rows to focus, the list takes focus itself.
+    column_view.grab_focus();
+    let focus = scrolled_window.root().and_then(|root| root.focus());
+    paging_state.borrow_mut().focus_keeper = focus.map(|w| w.downgrade());
+}
+
+/// Once a reload has restored the selection, give keyboard focus back to the
+/// list, on the selected row, if it held focus when the reload started.
+fn focus_restored_selection(
+    scrolled_window: &gtk::ScrolledWindow,
+    selection_model: &gtk::MultiSelection,
+    paging_state: &Rc<RefCell<CommitPagingState>>,
+) {
+    let mut st = paging_state.borrow_mut();
+    if st.focus_keeper.is_none() || st.pending_select_sha.is_some() {
+        return;
+    }
+    let selection = selection_model.selection();
+    if selection.is_empty() {
+        return;
+    }
+    let keeper = st.focus_keeper.take().and_then(|k| k.upgrade());
+    drop(st);
+    if !keeper.is_some_and(|k| focus::is_focus(&k)) {
+        return;
+    }
+    if let Some(column_view) = scrolled_window.child().and_downcast::<gtk::ColumnView>() {
+        // Moves focus itself only while the window is active; otherwise it
+        // just sets the list's focus row, which grabbing focus then lands on.
+        column_view.scroll_to(selection.minimum(), None, gtk::ListScrollFlags::FOCUS, None);
+        column_view.grab_focus();
+    }
+}
+
 /// Record the uncommitted-changes check result and, once the first page is
 /// in, add the row above it. Before that, the first page adds it instead.
 fn apply_worktree_row(
@@ -1015,6 +1077,7 @@ fn poll_commit_pages(
                         }
                     }
                 }
+                focus_restored_selection(&scrolled_window, &selection_model, &paging_state);
             }
             Ok(CommitLoadResponse::WorktreeRow { generation, show }) => {
                 if generation != expected_generation {
@@ -1027,6 +1090,7 @@ fn poll_commit_pages(
                     &paging_state,
                     show,
                 );
+                focus_restored_selection(&scrolled_window, &selection_model, &paging_state);
             }
             Ok(CommitLoadResponse::Error {
                 generation,
@@ -1087,7 +1151,7 @@ fn start_commit_paging(
     on_first_page_branch: Rc<dyn Fn(String)>,
 ) {
     // Clear existing items + cancel any in-flight worker.
-    store.remove_all();
+    keep_focus_during_reload(scrolled_window, paging_state, store);
     selection_model.unselect_all();
     {
         let mut st = paging_state.borrow_mut();

@@ -1,5 +1,7 @@
 use gtk::{gio, glib, prelude::*};
 
+use crate::ui::focus;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -144,7 +146,19 @@ pub struct DiffFileTree {
     added_label: gtk::Label,
     removed_label: gtk::Label,
     root_store: gio::ListStore,
+    list_view: gtk::ListView,
     on_file_activated: FileActivatedCallback,
+    /// Set by `clear_keeping_focus` when a row had keyboard focus.
+    pending_focus: Rc<RefCell<Option<PendingFocus>>>,
+}
+
+/// A row to give keyboard focus back to once the files are listed again.
+struct PendingFocus {
+    /// Position of the row that had focus.
+    position: u32,
+    /// The widget holding focus meanwhile. If focus has moved off it by the
+    /// time the files are listed, it stays where it is.
+    keeper: glib::WeakRef<gtk::Widget>,
 }
 
 impl DiffFileTree {
@@ -314,7 +328,9 @@ impl DiffFileTree {
             added_label,
             removed_label,
             root_store,
+            list_view,
             on_file_activated,
+            pending_focus: Rc::new(RefCell::new(None)),
         };
         tree.clear();
         tree
@@ -332,6 +348,43 @@ impl DiffFileTree {
             .map(glib::BoxedAnyObject::new)
             .collect();
         self.root_store.splice(0, self.root_store.n_items(), &nodes);
+
+        let pending = self.pending_focus.borrow_mut().take();
+        let n_rows = self.list_view.model().map_or(0, |model| model.n_items());
+        let still_kept = |p: &PendingFocus| p.keeper.upgrade().is_some_and(|k| focus::is_focus(&k));
+        if let Some(pending) = pending.filter(|p| n_rows > 0 && still_kept(p)) {
+            // Only moves the list's focus row while the list lacks focus (or
+            // the window is inactive); grabbing focus then lands on that row.
+            self.list_view.scroll_to(
+                pending.position.min(n_rows - 1),
+                gtk::ListScrollFlags::FOCUS,
+                None,
+            );
+            self.list_view.grab_focus();
+        }
+    }
+
+    /// Like `clear`, but if a row has keyboard focus, move it to `keeper` and
+    /// give it back to the row in the same position once files are listed
+    /// again (as when the same diff is reloaded).
+    pub fn clear_keeping_focus(&self, keeper: &impl IsA<gtk::Widget>) {
+        if let Some(position) = self.focused_position() {
+            keeper.grab_focus();
+            *self.pending_focus.borrow_mut() = Some(PendingFocus {
+                position,
+                keeper: keeper.upcast_ref::<gtk::Widget>().downgrade(),
+            });
+        }
+        self.clear();
+    }
+
+    /// Position of the row with keyboard focus, if any.
+    fn focused_position(&self) -> Option<u32> {
+        let row = focus::focused_child(&self.list_view)?
+            .first_child()
+            .and_downcast::<gtk::TreeExpander>()?
+            .list_row()?;
+        Some(row.position())
     }
 
     /// Remove all files (e.g. while a new diff is loading).

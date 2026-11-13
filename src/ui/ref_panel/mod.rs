@@ -19,6 +19,7 @@ use std::rc::{Rc, Weak};
 
 use crate::APP_ID;
 use crate::git::{BranchInfo, StashInfo, TagInfo};
+use crate::ui::focus;
 
 /// Type of git reference (branch, remote branch, tag, or stash).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,14 @@ impl Section {
 enum HeaderKind {
     Section(Section),
     Remote(String),
+}
+
+/// A row of the list, by what it shows rather than its position, so it can
+/// be found again after the rows are replaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowKey {
+    Header(HeaderKind),
+    Ref(SelectedRef),
 }
 
 /// Everything a ref row displays.
@@ -248,6 +257,7 @@ impl RefPanel {
     ) {
         let inner = &self.inner;
         let preserved = inner.selected_ref.borrow().clone();
+        let focused = inner.focused_row();
 
         inner.batch(|| {
             *inner.checked_out_branch.borrow_mut() = checked_out_branch.map(String::from);
@@ -294,12 +304,14 @@ impl RefPanel {
             // The rows changed, so section visibility must be recomputed.
             inner.apply_filter();
         });
+        inner.refocus(focused);
     }
 
     /// Replace the listed tags, keeping the selection. If the selected ref was
     /// a tag that is gone, the default ref is selected instead.
     pub fn set_tags(&self, tags: &[TagInfo]) {
         let inner = &self.inner;
+        let focused = inner.focused_row();
         inner.batch(|| {
             replace_items(
                 &inner.section(Section::Tags).store,
@@ -309,6 +321,7 @@ impl RefPanel {
             // The Tags section's visibility under the filter may have changed.
             inner.apply_filter();
         });
+        inner.refocus(focused);
     }
 
     /// Reveal the filter bar and focus its entry.
@@ -627,13 +640,48 @@ impl Inner {
 
     /// The tree row of the header that has keyboard focus, if any.
     fn focused_header_row(&self) -> Option<gtk::TreeListRow> {
-        self.list_view
-            .focus_child()?
+        focus::focused_child(&self.list_view)?
             .first_child()
             .filter(|child| child.widget_name() == HEADER_ROW)?
             .first_child()
             .and_downcast::<gtk::TreeExpander>()?
             .list_row()
+    }
+
+    /// The row with keyboard focus, if the list has it.
+    fn focused_row(&self) -> Option<RowKey> {
+        if !focus::contains_focus(&self.list_view) {
+            return None;
+        }
+        if let Some(row) = self.focused_header_row() {
+            return row_key(row.upcast_ref());
+        }
+        // Moving onto a ref row with the keyboard selects it, and clicking
+        // one switches to it, so the focused ref row is the selected one.
+        self.selection.selected_item().and_then(|row| row_key(&row))
+    }
+
+    /// Replacing the rows makes GTK move keyboard focus to whichever row
+    /// takes the old position. Put it back on the row that had it (`focused`,
+    /// from `focused_row`), or on the selected row if that one is gone.
+    fn refocus(&self, focused: Option<RowKey>) {
+        let Some(focused) = focused else {
+            return;
+        };
+        let position = (0..self.tree.n_items())
+            .find(|&i| {
+                self.tree
+                    .item(i)
+                    .is_some_and(|row| row_key(&row).as_ref() == Some(&focused))
+            })
+            .unwrap_or_else(|| self.selection.selected());
+        if position < self.tree.n_items() {
+            // Moves focus itself only while the window is active; otherwise it
+            // just sets the list's focus row, which grabbing focus then lands on.
+            self.list_view
+                .scroll_to(position, gtk::ListScrollFlags::FOCUS, None);
+            self.list_view.grab_focus();
+        }
     }
 
     fn section(&self, section: Section) -> &SectionModel {
@@ -964,6 +1012,14 @@ fn ref_info(obj: &glib::Object) -> Option<SelectedRef> {
         PanelItem::Header { .. } => None,
     })
     .flatten()
+}
+
+/// What a row or item shows (see `RowKey`).
+fn row_key(obj: &glib::Object) -> Option<RowKey> {
+    with_item(obj, |item| match item {
+        PanelItem::Header { kind, .. } => RowKey::Header(kind.clone()),
+        PanelItem::Ref(entry) => RowKey::Ref(entry.info.clone()),
+    })
 }
 
 /// Whether `obj` is the row or item of `ref_info`.
