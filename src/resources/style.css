@@ -3,8 +3,32 @@
     background-color: @view_bg_color;
 }
 
-/* Ref panel section headers. The list row adds 2px of padding on each
-   side, so the header matches a GtkExpander title with 8px of padding. */
+/* The row widgets fill their list rows, with the insets as their own
+   padding, so a click anywhere on a row reaches the row's click gesture
+   (which switches to the ref or toggles the header). A margin or the list
+   row's padding would leave a border where a click only selects. */
+.ref-panel-list > row {
+    padding: 0;
+}
+
+.ref-panel-row {
+    padding: 8px 14px;
+}
+
+.ref-panel-row.remote {
+    padding-left: 22px;
+}
+
+.ref-panel-header {
+    padding: 2px;
+}
+
+.ref-panel-header.remote {
+    padding-left: 10px;
+}
+
+/* Ref panel section headers. With the header's 2px of padding, they match
+   a GtkExpander title with 8px of padding. */
 .ref-panel-expander-label {
     padding: 6px 12px;
     border-radius: 6px;

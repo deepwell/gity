@@ -135,8 +135,9 @@ enum PanelItem {
     Ref(RefEntry),
 }
 
-/// Indent of a remote's header and branches inside the Remotes section.
-const REMOTE_INDENT: i32 = 8;
+/// CSS class that indents a remote's header and branches inside the
+/// Remotes section.
+const REMOTE_CLASS: &str = "remote";
 /// Widget names that tell the two kinds of row widget apart on recycling.
 const HEADER_ROW: &str = "header-row";
 const REF_ROW: &str = "ref-row";
@@ -1088,7 +1089,7 @@ fn build_header_row(panel: Weak<Inner>, list_item: &gtk::ListItem) -> gtk::Box {
         .build();
 
     // Only draws the chevron; the header's click gesture does the toggling,
-    // so a click on the chevron must reach it. The list row's own 2px padding
+    // so a click on the chevron must reach it. The header's own 2px padding
     // makes up the rest of the 10px inset.
     let expander = gtk::TreeExpander::builder()
         .indent_for_depth(false)
@@ -1151,12 +1152,12 @@ fn update_header_row(header: &gtk::Box, row: &gtk::TreeListRow, kind: &HeaderKin
         return;
     };
 
-    let (text, create_button, indent) = match kind {
-        HeaderKind::Section(section) => (section.title(), section.create_button(), 0),
-        HeaderKind::Remote(remote) => (remote.as_str(), None, REMOTE_INDENT),
+    let (text, create_button) = match kind {
+        HeaderKind::Section(section) => (section.title(), section.create_button()),
+        HeaderKind::Remote(remote) => (remote.as_str(), None),
     };
     title.set_text(text);
-    header.set_margin_start(indent);
+    set_css_class(header, REMOTE_CLASS, matches!(kind, HeaderKind::Remote(_)));
     button.set_visible(create_button.is_some());
     button.set_action_name(create_button.map(|(_, action)| action));
     button.set_tooltip_text(create_button.map(|(tooltip, _)| tooltip));
@@ -1165,12 +1166,11 @@ fn update_header_row(header: &gtk::Box, row: &gtk::TreeListRow, kind: &HeaderKin
 /// Build the widget for a ref row: checkmark, name, and age. A click switches
 /// to the ref; a right click opens its context menu.
 fn build_ref_row(panel: Weak<Inner>, list_item: &gtk::ListItem) -> gtk::Box {
+    // Insets are CSS padding, not margins, so the box (and its click
+    // gesture) covers the whole list row.
     let row_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(6)
+        .css_classes(["ref-panel-row"])
         .spacing(8)
         .hexpand(true)
         .build();
@@ -1230,8 +1230,7 @@ fn build_ref_row(panel: Weak<Inner>, list_item: &gtk::ListItem) -> gtk::Box {
 
 fn update_ref_row(row_box: &gtk::Box, entry: &RefEntry, depth: u32) {
     // Remote branches sit under their remote's header (depth 2).
-    let indent = if depth >= 2 { REMOTE_INDENT } else { 0 };
-    row_box.set_margin_start(12 + indent);
+    set_css_class(row_box, REMOTE_CLASS, depth >= 2);
 
     let Some(check_icon) = row_box.first_child().and_downcast::<gtk::Image>() else {
         return;
@@ -1251,6 +1250,14 @@ fn update_ref_row(row_box: &gtk::Box, entry: &RefEntry, depth: u32) {
         "<span size='small'>{}</span>",
         glib::markup_escape_text(&entry.time_ago)
     ));
+}
+
+fn set_css_class(widget: &impl IsA<gtk::Widget>, class: &str, enabled: bool) {
+    if enabled {
+        widget.add_css_class(class);
+    } else {
+        widget.remove_css_class(class);
+    }
 }
 
 /// Group remote-tracking branches by remote name (the part before the first `/`).
