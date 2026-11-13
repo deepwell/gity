@@ -58,24 +58,24 @@ fn update_diff_tag_colors(buffer: &gtk::TextBuffer) {
 
     // Code view tags
     if let Some(add_tag) = tag_table.lookup("diff-add") {
-        add_tag.set_property("paragraph-background", &colors.add_bg);
+        add_tag.set_property("paragraph-background", colors.add_bg);
     }
     if let Some(remove_tag) = tag_table.lookup("diff-remove") {
-        remove_tag.set_property("paragraph-background", &colors.remove_bg);
+        remove_tag.set_property("paragraph-background", colors.remove_bg);
     }
     if let Some(hunk_tag) = tag_table.lookup("diff-hunk") {
-        hunk_tag.set_property("foreground", &colors.hunk_fg);
+        hunk_tag.set_property("foreground", colors.hunk_fg);
     }
     if let Some(header_tag) = tag_table.lookup("diff-header") {
-        header_tag.set_property("foreground", &colors.header_fg);
+        header_tag.set_property("foreground", colors.header_fg);
     }
 
     // Gutter-specific tags (darker colors)
     if let Some(gutter_add_tag) = tag_table.lookup("gutter-add") {
-        gutter_add_tag.set_property("paragraph-background", &colors.gutter_add_bg);
+        gutter_add_tag.set_property("paragraph-background", colors.gutter_add_bg);
     }
     if let Some(gutter_remove_tag) = tag_table.lookup("gutter-remove") {
-        gutter_remove_tag.set_property("paragraph-background", &colors.gutter_remove_bg);
+        gutter_remove_tag.set_property("paragraph-background", colors.gutter_remove_bg);
     }
 }
 
@@ -466,7 +466,7 @@ fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
     });
     // Use paragraph background so the highlight spans the whole line to the right edge,
     // not just behind the glyphs.
-    add_tag.set_property("paragraph-background", &colors.add_bg);
+    add_tag.set_property("paragraph-background", colors.add_bg);
     add_tag.set_property("paragraph-background-set", true);
     add_tag.set_property("weight-set", true);
 
@@ -475,7 +475,7 @@ fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
         tag_table.add(&tag);
         tag
     });
-    remove_tag.set_property("paragraph-background", &colors.remove_bg);
+    remove_tag.set_property("paragraph-background", colors.remove_bg);
     remove_tag.set_property("paragraph-background-set", true);
     remove_tag.set_property("weight-set", true);
 
@@ -484,7 +484,7 @@ fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
         tag_table.add(&tag);
         tag
     });
-    hunk_tag.set_property("foreground", &colors.hunk_fg);
+    hunk_tag.set_property("foreground", colors.hunk_fg);
     hunk_tag.set_property("weight-set", true);
 
     let header_tag = tag_table.lookup("diff-header").unwrap_or_else(|| {
@@ -492,7 +492,7 @@ fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
         tag_table.add(&tag);
         tag
     });
-    header_tag.set_property("foreground", &colors.header_fg);
+    header_tag.set_property("foreground", colors.header_fg);
     header_tag.set_property("weight-set", true);
 
     let start = buffer.start_iter();
@@ -501,7 +501,7 @@ fn apply_basic_diff_line_tags(buffer: &gtk::TextBuffer) {
 
     let mut line_start = buffer.start_iter();
     while !line_start.is_end() {
-        let mut line_end = line_start.clone();
+        let mut line_end = line_start;
         line_end.forward_to_line_end();
 
         let text = buffer.text(&line_start, &line_end, false);
@@ -691,7 +691,7 @@ fn apply_diff_line_tags_by_kind(buffer: &gtk::TextBuffer, kinds: &[DiffLineKind]
         let Some(line_start) = buffer.iter_at_line(idx as i32) else {
             break;
         };
-        let mut line_end = line_start.clone();
+        let mut line_end = line_start;
         line_end.forward_to_line_end();
 
         match kind {
@@ -732,7 +732,7 @@ fn apply_gutter_line_tags(buffer: &gtk::TextBuffer, kinds: &[DiffLineKind]) {
         tag_table.add(&tag);
         tag
     });
-    add_tag.set_property("paragraph-background", &colors.gutter_add_bg);
+    add_tag.set_property("paragraph-background", colors.gutter_add_bg);
     add_tag.set_property("paragraph-background-set", true);
 
     let remove_tag = tag_table.lookup("gutter-remove").unwrap_or_else(|| {
@@ -740,7 +740,7 @@ fn apply_gutter_line_tags(buffer: &gtk::TextBuffer, kinds: &[DiffLineKind]) {
         tag_table.add(&tag);
         tag
     });
-    remove_tag.set_property("paragraph-background", &colors.gutter_remove_bg);
+    remove_tag.set_property("paragraph-background", colors.gutter_remove_bg);
     remove_tag.set_property("paragraph-background-set", true);
 
     // Clear any existing tags and apply based on line kind
@@ -752,7 +752,7 @@ fn apply_gutter_line_tags(buffer: &gtk::TextBuffer, kinds: &[DiffLineKind]) {
         let Some(line_start) = buffer.iter_at_line(idx as i32) else {
             break;
         };
-        let mut line_end = line_start.clone();
+        let mut line_end = line_start;
         line_end.forward_to_line_end();
 
         match kind {
@@ -806,7 +806,7 @@ fn build_file_row(prepared: &PreparedDiffSection, global_gutter_chars: usize) ->
     buffer.set_highlight_syntax(false);
     buffer.set_text(right_text);
 
-    apply_diff_line_tags_by_kind(buffer.upcast_ref::<gtk::TextBuffer>(), &kinds);
+    apply_diff_line_tags_by_kind(buffer.upcast_ref::<gtk::TextBuffer>(), kinds);
 
     let view = sv::View::with_buffer(&buffer);
     // Diff is a viewer: keep it read-only to avoid IME/input-method paths on Wayland

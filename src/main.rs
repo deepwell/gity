@@ -7,7 +7,6 @@ mod version;
 #[cfg(test)]
 mod test_support;
 
-use adw;
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;

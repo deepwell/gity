@@ -162,25 +162,25 @@ impl WelcomeView {
         let callback_for_activate = self.repo_clicked_callback.clone();
         flow_box.connect_child_activated(move |_, child| {
             let name = child.child().map(|c| c.widget_name());
-            if let Some(name) = name {
-                if !name.is_empty() {
-                    // Try to parse as JSON first (new format)
-                    if let Ok(paths) = serde_json::from_str::<serde_json::Value>(&name) {
-                        if let (Some(sandbox), Some(real)) = (
-                            paths.get("sandbox").and_then(|v| v.as_str()),
-                            paths.get("real").and_then(|v| v.as_str()),
-                        ) {
-                            if let Some(ref cb) = *callback_for_activate.borrow() {
-                                cb(PathBuf::from(sandbox), PathBuf::from(real));
-                            }
-                            return;
-                        }
-                    }
-                    // Fallback: treat as single path (old format or non-sandbox)
-                    let path = PathBuf::from(name.as_str());
+            if let Some(name) = name
+                && !name.is_empty()
+            {
+                // Try to parse as JSON first (new format)
+                if let Ok(paths) = serde_json::from_str::<serde_json::Value>(&name)
+                    && let (Some(sandbox), Some(real)) = (
+                        paths.get("sandbox").and_then(|v| v.as_str()),
+                        paths.get("real").and_then(|v| v.as_str()),
+                    )
+                {
                     if let Some(ref cb) = *callback_for_activate.borrow() {
-                        cb(path.clone(), path);
+                        cb(PathBuf::from(sandbox), PathBuf::from(real));
                     }
+                    return;
+                }
+                // Fallback: treat as single path (old format or non-sandbox)
+                let path = PathBuf::from(name.as_str());
+                if let Some(ref cb) = *callback_for_activate.borrow() {
+                    cb(path.clone(), path);
                 }
             }
         });

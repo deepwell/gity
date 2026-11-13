@@ -1069,11 +1069,11 @@ fn poll_commit_pages(
                             if let Some(on_missing) = on_missing {
                                 on_missing();
                             }
-                        } else if !st.is_loading {
-                            if let Some(tx) = st.request_tx.clone() {
-                                st.is_loading = true;
-                                let _ = tx.send(CommitLoadRequest::NextPage);
-                            }
+                        } else if !st.is_loading
+                            && let Some(tx) = st.request_tx.clone()
+                        {
+                            st.is_loading = true;
+                            let _ = tx.send(CommitLoadRequest::NextPage);
                         }
                     }
                 }

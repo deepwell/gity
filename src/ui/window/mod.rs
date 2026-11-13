@@ -120,7 +120,7 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
     });
 
     // Wire actions + button handlers.
-    actions::install(&window, &ui, &app_state);
+    actions::install(window, ui, app_state);
 
     // Hook up mouse back button to go to welcome screen
     let window_for_back_button = window.clone();
@@ -200,7 +200,7 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
     ui.refresh_recent_repos();
 
     // Hook diff loader to commit selection changes
-    diff::connect(&ui, &app_state);
+    diff::connect(ui, app_state);
 
     // Create paned widget to allow resizing between commits list and diff view
     let main_content_paned = ui.repo_view.main_content_paned.clone();
@@ -290,13 +290,13 @@ fn wire_window(window: &gtk::ApplicationWindow, ui: &ui::WindowUi, app_state: &s
         save_state(win, &settings_close, &restoring_close);
 
         // Persist last-session repo only when this is the final window.
-        if let Some(app) = window_for_app.application() {
-            if app.windows().len() == 1 {
-                if let Some(path) = state_for_close.current_path.borrow().clone() {
-                    recent_repos::save_last_session(&path);
-                } else {
-                    recent_repos::clear_last_session();
-                }
+        if let Some(app) = window_for_app.application()
+            && app.windows().len() == 1
+        {
+            if let Some(path) = state_for_close.current_path.borrow().clone() {
+                recent_repos::save_last_session(&path);
+            } else {
+                recent_repos::clear_last_session();
             }
         }
 
@@ -333,32 +333,32 @@ pub fn build_ui(application: &adw::Application, repo_path_from_args: Option<&std
     wire_window(&window, &ui, &app_state);
 
     // If a repo path was provided via command-line args, load it
-    if let Some(path) = repo_path_from_args {
-        if path.exists() {
-            use std::time::Instant;
-            if let Err(e) = crate::git::validate_repository(path) {
-                repo::show_repo_error(&window, path, &e.to_string());
-                ui.set_repo_controls_visible(false);
-                ui.show_welcome();
-            } else {
-                let started_at = Instant::now();
-                ui.repo_view
-                    .commit_paging_state
-                    .borrow_mut()
-                    .pending_first_page_log = Some((
-                    started_at,
-                    path.clone(),
-                    "Open repo from CLI arg -> rendered on screen".to_string(),
-                ));
+    if let Some(path) = repo_path_from_args
+        && path.exists()
+    {
+        use std::time::Instant;
+        if let Err(e) = crate::git::validate_repository(path) {
+            repo::show_repo_error(&window, path, &e.to_string());
+            ui.set_repo_controls_visible(false);
+            ui.show_welcome();
+        } else {
+            let started_at = Instant::now();
+            ui.repo_view
+                .commit_paging_state
+                .borrow_mut()
+                .pending_first_page_log = Some((
+                started_at,
+                path.clone(),
+                "Open repo from CLI arg -> rendered on screen".to_string(),
+            ));
 
-                recent_repos::add_recent_repo(path, path);
-                ui.set_repo_controls_visible(true);
-                ui.show_main();
-                repo::load_repo(&ui, &app_state, APP_NAME, path.clone(), None);
-            }
-            window.present();
-            return;
+            recent_repos::add_recent_repo(path, path);
+            ui.set_repo_controls_visible(true);
+            ui.show_main();
+            repo::load_repo(&ui, &app_state, APP_NAME, path.clone(), None);
         }
+        window.present();
+        return;
     }
 
     // Auto-open repo from CWD if applicable (only for initial launch, not new windows)

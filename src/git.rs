@@ -268,10 +268,10 @@ pub fn default_branch_ref(path: &Path) -> String {
         .and_then(|h| if h.is_branch() { h.shorthand() } else { None })
         .map(|s| s.to_string());
 
-    if let Some(current) = head_branch_name.as_deref() {
-        if resolve(current) {
-            return current.to_string();
-        }
+    if let Some(current) = head_branch_name.as_deref()
+        && resolve(current)
+    {
+        return current.to_string();
     }
 
     if resolve("main") {
@@ -452,10 +452,10 @@ impl<'repo> CommitWalker<'repo> {
         if parents < self.opts.min_parents {
             return Ok(false);
         }
-        if let Some(n) = self.opts.max_parents_exclusive {
-            if parents >= n {
-                return Ok(false);
-            }
+        if let Some(n) = self.opts.max_parents_exclusive
+            && parents >= n
+        {
+            return Ok(false);
         }
 
         if let Some(ps) = &self.pathspec {
@@ -1090,10 +1090,10 @@ pub fn get_main_branch_head(path: &Path, current_ref: &str) -> Option<(String, S
             return None;
         }
         let ref_name = format!("refs/heads/{}", branch_name);
-        if let Ok(reference) = repo.find_reference(&ref_name) {
-            if let Ok(commit) = reference.peel_to_commit() {
-                return Some((branch_name.to_string(), commit.id().to_string()));
-            }
+        if let Ok(reference) = repo.find_reference(&ref_name)
+            && let Ok(commit) = reference.peel_to_commit()
+        {
+            return Some((branch_name.to_string(), commit.id().to_string()));
         }
     }
     None

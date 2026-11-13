@@ -851,14 +851,13 @@ impl Inner {
             return;
         }
         let target = self.selected_ref.borrow().clone();
-        if let Some(target) = &target {
-            if self
+        if let Some(target) = &target
+            && self
                 .selection
                 .selected_item()
                 .is_some_and(|row| is_ref(&row, target))
-            {
-                return;
-            }
+        {
+            return;
         }
 
         let position = target.and_then(|target| {
@@ -894,10 +893,10 @@ impl Inner {
     fn toggle_header(&self, row: &gtk::TreeListRow) {
         let expanded = !row.is_expanded();
         row.set_expanded(expanded);
-        if let Some(section) = header_section(row.upcast_ref()) {
-            if self.filter_query.borrow().is_empty() {
-                let _ = self.settings.set_boolean(section.settings_key(), expanded);
-            }
+        if let Some(section) = header_section(row.upcast_ref())
+            && self.filter_query.borrow().is_empty()
+        {
+            let _ = self.settings.set_boolean(section.settings_key(), expanded);
         }
     }
 

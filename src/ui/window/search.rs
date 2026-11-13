@@ -43,11 +43,11 @@ fn ensure_loaded_then_select(
     if !can_page || attempt >= 200 {
         return;
     }
-    if !st.is_loading {
-        if let Some(tx) = st.request_tx.clone() {
-            st.is_loading = true;
-            let _ = tx.send(CommitLoadRequest::NextPage);
-        }
+    if !st.is_loading
+        && let Some(tx) = st.request_tx.clone()
+    {
+        st.is_loading = true;
+        let _ = tx.send(CommitLoadRequest::NextPage);
     }
     drop(st);
 
@@ -447,11 +447,11 @@ fn poll_search_result(
                 let mut st = commit_paging_state.borrow_mut();
                 let can_page = !st.done && st.request_tx.is_some();
                 if can_page && attempt < 200 {
-                    if !st.is_loading {
-                        if let Some(tx) = st.request_tx.clone() {
-                            st.is_loading = true;
-                            let _ = tx.send(CommitLoadRequest::NextPage);
-                        }
+                    if !st.is_loading
+                        && let Some(tx) = st.request_tx.clone()
+                    {
+                        st.is_loading = true;
+                        let _ = tx.send(CommitLoadRequest::NextPage);
                     }
                     drop(st);
 

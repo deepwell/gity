@@ -31,7 +31,7 @@ fn stash_head(path: &Path, ref_name: &str) -> Option<(String, String)> {
 pub fn show_repo_error(window: &gtk::ApplicationWindow, path: &PathBuf, error: &str) {
     let dialog = gtk::AlertDialog::builder()
         .message("Not a Git repository")
-        .detail(&format!(
+        .detail(format!(
             "“{}” is not a Git repository.\n\n{}",
             path.display(),
             error
@@ -684,35 +684,34 @@ pub fn maybe_load_repo_from_cwd(
 ) -> bool {
     // If launched from a terminal, auto-open the current working directory if it
     // is inside a Git repository (worktree root preferred).
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(repo_root) = git::discover_repository_root(&cwd) {
-            if repo_root.exists() {
-                if let Err(e) = git::validate_repository(&repo_root) {
-                    show_repo_error(window, &repo_root, &e.to_string());
-                    ui.set_repo_controls_visible(false);
-                    ui.show_welcome();
-                    return false;
-                }
-
-                let started_at = Instant::now();
-                ui.repo_view
-                    .commit_paging_state
-                    .borrow_mut()
-                    .pending_first_page_log = Some((
-                    started_at,
-                    repo_root.clone(),
-                    "Auto-open repo from CWD -> rendered on screen".to_string(),
-                ));
-
-                let branch = git::checked_out_branch_name(&repo_root);
-                // For non-portal access, real_path and sandbox_path are the same
-                recent_repos::add_recent_repo(&repo_root, &repo_root);
-                ui.set_repo_controls_visible(true);
-                ui.show_main();
-                load_repo(ui, state, app_name, repo_root, branch);
-                return true;
-            }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(repo_root) = git::discover_repository_root(&cwd)
+        && repo_root.exists()
+    {
+        if let Err(e) = git::validate_repository(&repo_root) {
+            show_repo_error(window, &repo_root, &e.to_string());
+            ui.set_repo_controls_visible(false);
+            ui.show_welcome();
+            return false;
         }
+
+        let started_at = Instant::now();
+        ui.repo_view
+            .commit_paging_state
+            .borrow_mut()
+            .pending_first_page_log = Some((
+            started_at,
+            repo_root.clone(),
+            "Auto-open repo from CWD -> rendered on screen".to_string(),
+        ));
+
+        let branch = git::checked_out_branch_name(&repo_root);
+        // For non-portal access, real_path and sandbox_path are the same
+        recent_repos::add_recent_repo(&repo_root, &repo_root);
+        ui.set_repo_controls_visible(true);
+        ui.show_main();
+        load_repo(ui, state, app_name, repo_root, branch);
+        return true;
     }
 
     false

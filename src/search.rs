@@ -460,7 +460,7 @@ impl SearchHandler {
         // Select and scroll to the first matching commit.
         //
         // IMPORTANT: callers must ensure the target index is already present in the store.
-        if let Some(&match_index) = matching_indices.get(0) {
+        if let Some(&match_index) = matching_indices.first() {
             // Matches count commits only; skip the uncommitted row if shown.
             let row = match_index + crate::ui::commit_list::row_offset(&store);
             if row < store.n_items() {
@@ -667,7 +667,7 @@ fn find_text_matches_parallel(
         .map(|n| n.get())
         .unwrap_or(1);
     let min_chunk = 50_000usize;
-    let max_workers = (total + min_chunk - 1) / min_chunk;
+    let max_workers = total.div_ceil(min_chunk);
     let workers = available.max(1).min(max_workers.max(1));
 
     let needle_lower_ascii: Option<Vec<u8>> = if query.is_ascii() {
@@ -683,7 +683,7 @@ fn find_text_matches_parallel(
     };
 
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u32>, String>>();
-    let chunk_size = (total + workers - 1) / workers;
+    let chunk_size = total.div_ceil(workers);
 
     for worker_idx in 0..workers {
         let start = worker_idx * chunk_size;
@@ -743,9 +743,9 @@ fn find_text_matches_parallel(
 
     let mut all: Vec<u32> = Vec::new();
     for res in rx {
-        match res {
-            Ok(mut v) => all.append(&mut v),
-            Err(e) => return Err(e),
+        {
+            let mut v = res?;
+            all.append(&mut v)
         }
     }
     all.sort_unstable();
