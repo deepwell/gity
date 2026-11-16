@@ -399,8 +399,8 @@ impl<'repo> CommitWalker<'repo> {
         )?;
 
         for spec in &opts.revspecs {
-            if spec.starts_with('^') {
-                let obj = repo.revparse_single(&spec[1..])?;
+            if let Some(hidden) = spec.strip_prefix('^') {
+                let obj = repo.revparse_single(hidden)?;
                 revwalk.hide(obj.id())?;
                 continue;
             }

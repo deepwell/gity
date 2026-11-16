@@ -2,7 +2,7 @@ use crate::git;
 use crate::logger::Logger;
 use git2::{ObjectType, Oid, Repository};
 use gtk::{gio, glib, prelude::*};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -59,8 +59,8 @@ impl OidIndexCache {
         revwalk.set_sorting(git2::Sort::NONE)?;
 
         for spec in &opts.revspecs {
-            if spec.starts_with('^') {
-                let obj = repo.revparse_single(&spec[1..])?;
+            if let Some(hidden) = spec.strip_prefix('^') {
+                let obj = repo.revparse_single(hidden)?;
                 revwalk.hide(obj.id())?;
                 continue;
             }
@@ -651,7 +651,7 @@ fn contains_ascii_case_insensitive(haystack: &[u8], needle_lower: &[u8]) -> bool
 }
 
 fn find_text_matches_parallel(
-    repo_path: &PathBuf,
+    repo_path: &Path,
     oids: Arc<Vec<Oid>>,
     query: &str,
     query_lower: &str,
@@ -692,7 +692,7 @@ fn find_text_matches_parallel(
         }
         let end = ((worker_idx + 1) * chunk_size).min(total);
         let tx = tx.clone();
-        let repo_path = repo_path.clone();
+        let repo_path = repo_path.to_path_buf();
         let oids = oids.clone();
         let cancel = cancel.cloned();
         let progress = progress.cloned();

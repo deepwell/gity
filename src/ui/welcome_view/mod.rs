@@ -133,7 +133,7 @@ impl WelcomeView {
 
         // Cap the number of columns by item count (1..4), while still allowing
         // the layout to wrap down on smaller window widths.
-        let max_cols: u32 = (recent_repos.len().min(4)).max(1) as u32;
+        let max_cols: u32 = recent_repos.len().clamp(1, 4) as u32;
 
         // Add "Recent Repositories" header
         let header = gtk::Label::builder()

@@ -1247,42 +1247,36 @@ fn start_commit_paging(
         };
 
         let mut is_first_page = true;
-        loop {
-            match req_rx.recv() {
-                Ok(CommitLoadRequest::NextPage) => {
-                    if generation_counter_for_thread.load(Ordering::Relaxed) != expected_generation
-                    {
-                        break;
-                    }
+        while let Ok(CommitLoadRequest::NextPage) = req_rx.recv() {
+            if generation_counter_for_thread.load(Ordering::Relaxed) != expected_generation {
+                break;
+            }
 
-                    let (commits, done) = match walker.next_page(COMMIT_PAGE_SIZE, None) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            let _ = res_tx.send(CommitLoadResponse::Error {
-                                generation: expected_generation,
-                                message: e.to_string(),
-                            });
-                            return;
-                        }
-                    };
-
-                    let _ = res_tx.send(CommitLoadResponse::Page {
+            let (commits, done) = match walker.next_page(COMMIT_PAGE_SIZE, None) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = res_tx.send(CommitLoadResponse::Error {
                         generation: expected_generation,
-                        branch_name: actual_branch_name.clone(),
-                        commits,
-                        done,
-                        is_first_page,
+                        message: e.to_string(),
                     });
-                    if let Some(start) = start_worktree_check.take() {
-                        start();
-                    }
-
-                    is_first_page = false;
-                    if done {
-                        break;
-                    }
+                    return;
                 }
-                Ok(CommitLoadRequest::Stop) | Err(_) => break,
+            };
+
+            let _ = res_tx.send(CommitLoadResponse::Page {
+                generation: expected_generation,
+                branch_name: actual_branch_name.clone(),
+                commits,
+                done,
+                is_first_page,
+            });
+            if let Some(start) = start_worktree_check.take() {
+                start();
+            }
+
+            is_first_page = false;
+            if done {
+                break;
             }
         }
     });

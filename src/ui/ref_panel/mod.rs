@@ -1331,7 +1331,7 @@ fn group_remote_branches(remote_branches: &[BranchInfo]) -> Vec<(String, Vec<Bra
 
     let mut groups: Vec<(String, Vec<BranchInfo>)> = by_remote.into_iter().collect();
     for (_, branches) in &mut groups {
-        branches.sort_by(|a, b| b.latest_commit_time.cmp(&a.latest_commit_time));
+        branches.sort_by_key(|b| std::cmp::Reverse(b.latest_commit_time));
     }
     groups
 }
