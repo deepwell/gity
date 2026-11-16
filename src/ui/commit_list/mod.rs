@@ -947,7 +947,6 @@ fn poll_commit_pages(
     store: gio::ListStore,
     selection_model: gtk::MultiSelection,
     paging_state: Rc<std::cell::RefCell<CommitPagingState>>,
-    repo_path: PathBuf,
     on_first_page_branch: Rc<dyn Fn(String)>,
 ) {
     // Stop polling if a newer generation started.
@@ -1119,7 +1118,6 @@ fn poll_commit_pages(
     let store_clone = store.clone();
     let selection_model_clone = selection_model.clone();
     let paging_state_clone = paging_state.clone();
-    let repo_path_clone = repo_path.clone();
     let on_first_page_branch_clone = on_first_page_branch.clone();
     let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(30), move || {
         poll_commit_pages(
@@ -1129,7 +1127,6 @@ fn poll_commit_pages(
             store_clone,
             selection_model_clone,
             paging_state_clone,
-            repo_path_clone,
             on_first_page_branch_clone,
         );
     });
@@ -1192,7 +1189,6 @@ fn start_commit_paging(
         store.clone(),
         selection_model.clone(),
         paging_state.clone(),
-        path.clone(),
         on_first_page_branch,
     );
 

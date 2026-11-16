@@ -39,6 +39,13 @@ pub enum RefAction {
     Delete { name: String, ref_type: RefType },
 }
 
+/// Callback for an activated ref row (see `on_ref_selected`).
+type RefSelectedHandler = Rc<dyn Fn(&str, RefType)>;
+
+/// Callback for create/delete requests (see `on_ref_action`), shared between
+/// the panel and its actions so it can be set after they are installed.
+type SharedRefActionHandler = Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>>;
+
 /// Information about the currently selected reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectedRef {
@@ -205,9 +212,9 @@ struct Inner {
     /// Per-section models, in display order
     sections: Vec<SectionModel>,
     /// Handler invoked when a ref row is activated (set via `on_ref_selected`)
-    activate_handler: RefCell<Option<Rc<dyn Fn(&str, RefType)>>>,
+    activate_handler: RefCell<Option<RefSelectedHandler>>,
     /// Handler invoked for create/delete requests (set via `on_ref_action`)
-    ref_action_handler: Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>>,
+    ref_action_handler: SharedRefActionHandler,
     /// Name of the checked-out branch, which can't be deleted
     checked_out_branch: RefCell<Option<String>>,
     /// The selected ref. It stays selected while its row is hidden (in a
@@ -507,8 +514,7 @@ impl Inner {
 
         // Create/delete actions, shared by the header buttons and the row
         // context menus. Remote branches have no menu.
-        let ref_action_handler: Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>> =
-            Rc::new(RefCell::new(None));
+        let ref_action_handler: SharedRefActionHandler = Rc::new(RefCell::new(None));
         let context_ref = Rc::new(RefCell::new(None));
         let delete_action = install_ref_actions(&side_panel, &ref_action_handler, &context_ref);
         let ref_menu = gio::Menu::new();
@@ -1376,7 +1382,7 @@ fn append_header_button(label_box: &gtk::Box) {
 /// action so the context menu can disable it for the checked-out branch.
 fn install_ref_actions(
     panel: &gtk::Box,
-    handler: &Rc<RefCell<Option<Rc<dyn Fn(RefAction)>>>>,
+    handler: &SharedRefActionHandler,
     context_ref: &Rc<RefCell<Option<SelectedRef>>>,
 ) -> gio::SimpleAction {
     let emit = {

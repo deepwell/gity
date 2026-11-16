@@ -11,6 +11,10 @@ use super::recent_repos;
 use super::state::AppState;
 use super::ui::WindowUi;
 
+/// What the file portal thread reports: the chosen folder's sandbox and real
+/// paths, or an error message.
+type PortalResult = Result<(PathBuf, PathBuf), String>;
+
 fn ref_type_from_classification(c: RefClassification) -> RefType {
     match c {
         RefClassification::Branch => RefType::Branch,
@@ -273,7 +277,7 @@ pub fn open_repo_dialog(
     // Use ashpd file portal to open a folder
     // Use the shared Tokio runtime from AppState to ensure proper DBus connection management
     // Use a channel to send results back to the main thread
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, rx) = std::sync::mpsc::channel::<PortalResult>();
 
     // Clone the shared runtime for use in the background thread
     let shared_runtime = state.tokio_runtime.clone();
@@ -358,7 +362,7 @@ pub fn open_repo_dialog(
 }
 
 fn poll_file_portal_result(
-    rx: Arc<Mutex<std::sync::mpsc::Receiver<Result<(PathBuf, PathBuf), String>>>>,
+    rx: Arc<Mutex<std::sync::mpsc::Receiver<PortalResult>>>,
     poll_start_time: Arc<Mutex<Instant>>,
     window: &gtk::ApplicationWindow,
     ui: &WindowUi,

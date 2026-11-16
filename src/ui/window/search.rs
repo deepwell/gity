@@ -1,9 +1,11 @@
 use gtk::{gio, glib, prelude::*};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 
-use crate::search::SearchHandler;
+use crate::search::{SearchHandler, SearchResult};
 use crate::ui::commit_list::row_offset;
 use crate::ui::{CommitLoadRequest, CommitPagingState};
 
@@ -105,17 +107,10 @@ impl SearchController {
             });
 
         // Debounced search on text changes
-        let store_for_changed = ui.repo_view.commit_list.store.clone();
-        let selection_model_for_changed = ui.repo_view.commit_list.selection_model.clone();
-        let scrolled_window_for_changed = ui.repo_view.commit_list.widget.clone();
-        let handler_for_changed = handler.clone();
+        let view_for_changed = SearchResultView::new(ui, handler.clone());
         let state_for_changed = state.clone();
         let debounce_source_for_changed = debounce_source.clone();
         let current_cancel_for_changed = current_cancel.clone();
-        let search_status_label_for_changed = ui.repo_view.search_status_label.clone();
-        let search_spinner_for_changed = ui.repo_view.search_spinner.clone();
-        let last_search_status_for_changed = ui.repo_view.last_search_status.clone();
-        let commit_paging_state_for_changed = ui.repo_view.commit_paging_state.clone();
 
         ui.repo_view.search_entry.connect_changed(move |entry| {
             let text = entry.text();
@@ -131,19 +126,19 @@ impl SearchController {
             }
             // Clear the spinner immediately; the new search (if any) will re-enable it
             // when the debounce fires.
-            search_spinner_for_changed.set_visible(false);
+            view_for_changed.search_spinner.set_visible(false);
 
             if text.is_empty() {
-                search_status_label_for_changed.set_text("");
-                last_search_status_for_changed.borrow_mut().clear();
+                view_for_changed.search_status_label.set_text("");
+                view_for_changed.last_search_status.borrow_mut().clear();
                 return;
             }
 
             // Clamp the query used for searching, but do not modify the entry text.
             let query = clamp_search_query(text.as_str());
             if query.to_lowercase().is_empty() {
-                search_status_label_for_changed.set_text("");
-                last_search_status_for_changed.borrow_mut().clear();
+                view_for_changed.search_status_label.set_text("");
+                view_for_changed.last_search_status.borrow_mut().clear();
                 return;
             }
 
@@ -151,7 +146,7 @@ impl SearchController {
             let path_opt = state_for_changed.current_path.borrow().clone();
             let branch_opt = state_for_changed.current_ref.borrow().clone();
             if path_opt.is_none() {
-                search_status_label_for_changed.set_text("");
+                view_for_changed.search_status_label.set_text("");
                 return;
             }
             let path = path_opt.unwrap();
@@ -161,17 +156,9 @@ impl SearchController {
             let query_for_timeout = query.clone();
             let path_for_timeout = path.clone();
             let branch_name_for_timeout = branch_name.map(|s| s.to_string());
-            let store_for_timeout = store_for_changed.clone();
-            let selection_model_for_timeout = selection_model_for_changed.clone();
-            let scrolled_window_for_timeout = scrolled_window_for_changed.clone();
-            let handler_for_timeout = handler_for_changed.clone();
             let debounce_source_for_timeout = debounce_source_for_changed.clone();
             let current_cancel_for_timeout = current_cancel_for_changed.clone();
-            let search_status_label_for_timeout = search_status_label_for_changed.clone();
-            let search_spinner_for_timeout = search_spinner_for_changed.clone();
-            let last_search_status_for_timeout = last_search_status_for_changed.clone();
-            let commit_paging_state_for_timeout = commit_paging_state_for_changed.clone();
-            let search_entry_for_timeout = entry.clone();
+            let view_for_timeout = view_for_changed.clone();
 
             // Debounce (200ms)
             let source_id =
@@ -179,16 +166,16 @@ impl SearchController {
                     *debounce_source_for_timeout.borrow_mut() = None;
 
                     // Show loading indicator while the async search runs.
-                    search_spinner_for_timeout.set_visible(true);
-                    search_status_label_for_timeout.set_text("");
+                    view_for_timeout.search_spinner.set_visible(true);
+                    view_for_timeout.search_status_label.set_text("");
 
                     // Start a new cancel token for this search.
                     let cancel_token = Arc::new(AtomicBool::new(false));
                     *current_cancel_for_timeout.borrow_mut() = Some(cancel_token.clone());
 
                     // Perform search in background thread
-                    let (rx, search_progress) = handler_for_timeout
-                        .perform_search_async_cancelable(
+                    let (rx, search_progress) =
+                        view_for_timeout.handler.perform_search_async_cancelable(
                             path_for_timeout.clone(),
                             branch_name_for_timeout.clone(),
                             query_for_timeout.clone(),
@@ -198,16 +185,8 @@ impl SearchController {
                     poll_search_result(
                         query_for_timeout.clone(),
                         rx,
-                        handler_for_timeout.clone(),
-                        store_for_timeout.clone(),
-                        selection_model_for_timeout.clone(),
-                        scrolled_window_for_timeout.clone(),
-                        search_spinner_for_timeout.clone(),
-                        search_status_label_for_timeout.clone(),
-                        last_search_status_for_timeout.clone(),
-                        commit_paging_state_for_timeout.clone(),
-                        search_entry_for_timeout.clone(),
                         search_progress,
+                        view_for_timeout.clone(),
                     );
                 });
 
@@ -403,174 +382,141 @@ impl SearchController {
     }
 }
 
-fn poll_search_result(
-    expected_query: String,
-    rx: mpsc::Receiver<crate::search::SearchResult>,
-    search_handler: crate::search::SearchHandler,
+/// The widgets and state a search updates when its result arrives.
+#[derive(Clone)]
+struct SearchResultView {
+    handler: SearchHandler,
     store: gio::ListStore,
     selection_model: gtk::MultiSelection,
     scrolled_window: gtk::ScrolledWindow,
     search_spinner: adw::Spinner,
     search_status_label: gtk::Label,
-    last_search_status: std::rc::Rc<std::cell::RefCell<String>>,
-    commit_paging_state: std::rc::Rc<std::cell::RefCell<CommitPagingState>>,
+    last_search_status: Rc<RefCell<String>>,
+    commit_paging_state: Rc<RefCell<CommitPagingState>>,
     search_entry: gtk::SearchEntry,
-    search_progress: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-) {
-    fn try_process_search_result(
-        expected_query: String,
-        result: crate::search::SearchResult,
-        search_handler: crate::search::SearchHandler,
-        store: gio::ListStore,
-        selection_model: gtk::MultiSelection,
-        scrolled_window: gtk::ScrolledWindow,
-        search_spinner: adw::Spinner,
-        search_status_label: gtk::Label,
-        last_search_status: std::rc::Rc<std::cell::RefCell<String>>,
-        commit_paging_state: std::rc::Rc<std::cell::RefCell<CommitPagingState>>,
-        search_entry: gtk::SearchEntry,
-        attempt: u32,
-    ) {
-        // Ignore stale results (e.g. query changed or repo switched) so we don't
-        // overwrite the UI with an out-of-date search.
-        // NOTE: we clamp the UI text before comparing, because the entry may contain
-        // more than MAX_SEARCH_QUERY_CHARS but searches always run on the clamped query.
-        if clamp_search_query(search_entry.text().as_str()) != expected_query {
-            return;
+}
+
+impl SearchResultView {
+    fn new(ui: &WindowUi, handler: SearchHandler) -> Self {
+        Self {
+            handler,
+            store: ui.repo_view.commit_list.store.clone(),
+            selection_model: ui.repo_view.commit_list.selection_model.clone(),
+            scrolled_window: ui.repo_view.commit_list.widget.clone(),
+            search_spinner: ui.repo_view.search_spinner.clone(),
+            search_status_label: ui.repo_view.search_status_label.clone(),
+            last_search_status: ui.repo_view.last_search_status.clone(),
+            commit_paging_state: ui.repo_view.commit_paging_state.clone(),
+            search_entry: ui.repo_view.search_entry.clone(),
         }
-
-        // Ensure the first match is present in the paged store before processing the result.
-        // Search matches are global indices (revwalk order), while the UI list is loaded lazily.
-        if result.error.is_none() && !result.matching_indices.is_empty() {
-            let first_index = result.matching_indices[0];
-            if store.n_items() <= first_index + row_offset(&store) {
-                let mut st = commit_paging_state.borrow_mut();
-                let can_page = !st.done && st.request_tx.is_some();
-                if can_page && attempt < 200 {
-                    if !st.is_loading
-                        && let Some(tx) = st.request_tx.clone()
-                    {
-                        st.is_loading = true;
-                        let _ = tx.send(CommitLoadRequest::NextPage);
-                    }
-                    drop(st);
-
-                    let search_handler_clone = search_handler.clone();
-                    let store_clone = store.clone();
-                    let selection_model_clone = selection_model.clone();
-                    let scrolled_window_clone = scrolled_window.clone();
-                    let search_status_label_clone = search_status_label.clone();
-                    let last_search_status_clone = last_search_status.clone();
-                    let commit_paging_state_clone = commit_paging_state.clone();
-                    let search_entry_clone = search_entry.clone();
-                    glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(100),
-                        move || {
-                            try_process_search_result(
-                                expected_query,
-                                result,
-                                search_handler_clone,
-                                store_clone,
-                                selection_model_clone,
-                                scrolled_window_clone,
-                                search_spinner,
-                                search_status_label_clone,
-                                last_search_status_clone,
-                                commit_paging_state_clone,
-                                search_entry_clone,
-                                attempt + 1,
-                            );
-                        },
-                    );
-                    return;
-                }
-            }
-        }
-
-        let search_status_label_clone = search_status_label.clone();
-        let last_search_status_clone = last_search_status.clone();
-        let search_spinner_clone = search_spinner.clone();
-        search_handler.process_search_result_async(
-            result,
-            store,
-            selection_model,
-            scrolled_window,
-            move |match_count| {
-                let status_text = match match_count {
-                    Some(count) => format_match_count(count),
-                    None => String::new(),
-                };
-                search_status_label_clone.set_text(&status_text);
-                *last_search_status_clone.borrow_mut() = status_text;
-                search_spinner_clone.set_visible(false);
-            },
-        );
     }
 
+    /// Whether `query` is still the search entry's query. Results for any
+    /// other query are stale (e.g. the query changed or the repo switched).
+    /// The entry text is clamped before comparing, because the entry may hold
+    /// more than MAX_SEARCH_QUERY_CHARS but searches always run on the clamped
+    /// query.
+    fn is_current(&self, query: &str) -> bool {
+        clamp_search_query(self.search_entry.text().as_str()) == query
+    }
+}
+
+fn poll_search_result(
+    expected_query: String,
+    rx: mpsc::Receiver<SearchResult>,
+    search_progress: Arc<AtomicUsize>,
+    view: SearchResultView,
+) {
     match rx.try_recv() {
         Ok(result) => {
-            try_process_search_result(
-                expected_query,
-                result,
-                search_handler,
-                store,
-                selection_model,
-                scrolled_window,
-                search_spinner,
-                search_status_label,
-                last_search_status,
-                commit_paging_state,
-                search_entry,
-                0,
-            );
+            try_process_search_result(expected_query, result, view, 0);
         }
         Err(mpsc::TryRecvError::Empty) => {
             // Live progress: while the search is still running, show the number
             // of matches found so far (updating as more are found). Only touch
             // the label if this poll still corresponds to the active query.
-            if clamp_search_query(search_entry.text().as_str()) == expected_query {
+            if view.is_current(&expected_query) {
                 let count = search_progress.load(Ordering::Relaxed);
                 if count > 0 {
-                    search_status_label.set_text(&format_match_count(count));
+                    view.search_status_label
+                        .set_text(&format_match_count(count));
                 }
             }
 
-            let search_handler_clone = search_handler.clone();
-            let store_clone = store.clone();
-            let selection_model_clone = selection_model.clone();
-            let scrolled_window_clone = scrolled_window.clone();
-            let search_spinner_clone = search_spinner.clone();
-            let search_status_label_clone = search_status_label.clone();
-            let last_search_status_clone = last_search_status.clone();
-            let commit_paging_state_clone = commit_paging_state.clone();
-            let search_entry_clone = search_entry.clone();
-            let expected_query_clone = expected_query.clone();
-            let search_progress_clone = search_progress.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
-                poll_search_result(
-                    expected_query_clone,
-                    rx,
-                    search_handler_clone,
-                    store_clone,
-                    selection_model_clone,
-                    scrolled_window_clone,
-                    search_spinner_clone,
-                    search_status_label_clone,
-                    last_search_status_clone,
-                    commit_paging_state_clone,
-                    search_entry_clone,
-                    search_progress_clone,
-                );
+                poll_search_result(expected_query, rx, search_progress, view);
             });
         }
         Err(_) => {
             // Channel closed; clear loading indicator only if this is still the active query.
-            if clamp_search_query(search_entry.text().as_str()) == expected_query {
-                search_spinner.set_visible(false);
-                search_status_label.set_text("");
+            if view.is_current(&expected_query) {
+                view.search_spinner.set_visible(false);
+                view.search_status_label.set_text("");
             }
         }
     }
+}
+
+fn try_process_search_result(
+    expected_query: String,
+    result: SearchResult,
+    view: SearchResultView,
+    attempt: u32,
+) {
+    // Ignore stale results so we don't overwrite the UI with an out-of-date search.
+    if !view.is_current(&expected_query) {
+        return;
+    }
+
+    // Ensure the first match is present in the paged store before processing the result.
+    // Search matches are global indices (revwalk order), while the UI list is loaded lazily.
+    if result.error.is_none() && !result.matching_indices.is_empty() {
+        let first_index = result.matching_indices[0];
+        if view.store.n_items() <= first_index + row_offset(&view.store) {
+            let mut st = view.commit_paging_state.borrow_mut();
+            let can_page = !st.done && st.request_tx.is_some();
+            if can_page && attempt < 200 {
+                if !st.is_loading
+                    && let Some(tx) = st.request_tx.clone()
+                {
+                    st.is_loading = true;
+                    let _ = tx.send(CommitLoadRequest::NextPage);
+                }
+                drop(st);
+
+                glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
+                    try_process_search_result(expected_query, result, view, attempt + 1);
+                });
+                return;
+            }
+        }
+    }
+
+    let SearchResultView {
+        handler,
+        store,
+        selection_model,
+        scrolled_window,
+        search_spinner,
+        search_status_label,
+        last_search_status,
+        ..
+    } = view;
+    handler.process_search_result_async(
+        result,
+        store,
+        selection_model,
+        scrolled_window,
+        move |match_count| {
+            let status_text = match match_count {
+                Some(count) => format_match_count(count),
+                None => String::new(),
+            };
+            search_status_label.set_text(&status_text);
+            *last_search_status.borrow_mut() = status_text;
+            search_spinner.set_visible(false);
+        },
+    );
 }
 
 /// Format a match count for the status label (e.g. "0 matches", "1 match",
