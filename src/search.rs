@@ -372,55 +372,44 @@ impl SearchHandler {
         (rx, progress)
     }
 
-    /// Scroll to a specific item index in the scrolled window
+    /// Scroll the commit list so the (selected) row `item_index` is in view,
+    /// roughly centred.
+    ///
+    /// All scrolling goes through `ColumnView::scroll_to`, which anchors the
+    /// list on a row. Setting the vertical adjustment to an estimated pixel
+    /// offset instead can disagree with an anchor set by an earlier
+    /// `scroll_to` (as when the "Uncommitted changes" row is added) and leave
+    /// the list showing no rows.
     pub fn scroll_to_item(
         scrolled_window: &gtk::ScrolledWindow,
         selection_model: &gtk::MultiSelection,
         item_index: u32,
     ) {
-        let scrolled_window1 = scrolled_window.clone();
-        let scrolled_window2 = scrolled_window.clone();
-        let selection_model1 = selection_model.clone();
-        let selection_model2 = selection_model.clone();
-        let item_index_for_scroll = item_index;
+        let Some(column_view) = scrolled_window.child().and_downcast::<gtk::ColumnView>() else {
+            return;
+        };
+        // Brings the row into view at whichever edge it comes in from.
+        column_view.scroll_to(item_index, None, gtk::ListScrollFlags::NONE, None);
 
-        // First timeout: initial scroll attempt
-        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            let vadjustment = scrolled_window1.vadjustment();
-            let upper = vadjustment.upper();
-            let page_size = vadjustment.page_size();
-
-            let total_items = selection_model1.n_items();
-            if total_items > 0 {
-                let item_ratio = item_index_for_scroll as f64 / total_items as f64;
-                let target_position = item_ratio * upper;
-                let target_scroll = (target_position - page_size / 2.0)
-                    .max(0.0)
-                    .min(upper - page_size);
-                vadjustment.set_value(target_scroll);
+        // Centre it once the list is laid out around it, when the adjustment
+        // reflects the row's real position. The first tick comes before that
+        // frame's layout, so wait for the second.
+        let selection_model = selection_model.clone();
+        let vadjustment = scrolled_window.vadjustment();
+        let ticks = std::cell::Cell::new(0u8);
+        column_view.add_tick_callback(move |column_view, _| {
+            ticks.set(ticks.get() + 1);
+            if ticks.get() < 2 {
+                return glib::ControlFlow::Continue;
             }
-            glib::ControlFlow::Break
-        });
-
-        // Second timeout: fine-tune scroll position
-        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-            let vadjustment = scrolled_window2.vadjustment();
-            let upper = vadjustment.upper();
-            let page_size = vadjustment.page_size();
-            let current_value = vadjustment.value();
-
-            let total_items = selection_model2.n_items();
-            if total_items > 0 {
-                let item_ratio = item_index_for_scroll as f64 / total_items as f64;
-                let target_position = item_ratio * upper;
-                let target_scroll = (target_position - page_size / 2.0)
-                    .max(0.0)
-                    .min(upper - page_size);
-
-                // Only adjust if significantly off
-                if (target_scroll - current_value).abs() > 10.0 {
-                    vadjustment.set_value(target_scroll);
-                }
+            // Skip if another row was selected (and scrolled to) meanwhile.
+            if selection_model.is_selected(item_index) {
+                center_row(
+                    column_view,
+                    &vadjustment,
+                    selection_model.n_items(),
+                    item_index,
+                );
             }
             glib::ControlFlow::Break
         });
@@ -559,6 +548,34 @@ impl SearchHandler {
         }
         Some(target)
     }
+}
+
+/// Scroll `column_view` so that `row`, already in view, sits in the middle.
+///
+/// `scroll_to` aligns a row that is out of view with the edge it comes in
+/// from, so scrolling to the row half a page past `row` (on the side away
+/// from the middle) brings `row` to the middle.
+fn center_row(
+    column_view: &gtk::ColumnView,
+    vadjustment: &gtk::Adjustment,
+    n_items: u32,
+    row: u32,
+) {
+    let upper = vadjustment.upper();
+    let page_size = vadjustment.page_size();
+    if row >= n_items || upper <= 0.0 || page_size <= 0.0 {
+        return;
+    }
+    // Rows are a single line each, so they share one height.
+    let row_height = upper / f64::from(n_items);
+    let half_page_rows = (page_size / row_height / 2.0) as u32;
+    let row_middle = (f64::from(row) + 0.5) * row_height;
+    let target = if row_middle < vadjustment.value() + page_size / 2.0 {
+        row.saturating_sub(half_page_rows)
+    } else {
+        row.saturating_add(half_page_rows).min(n_items - 1)
+    };
+    column_view.scroll_to(target, None, gtk::ListScrollFlags::NONE, None);
 }
 
 fn parse_hex_prefix(prefix_lower: &str) -> Result<(Vec<u8>, Option<u8>), String> {
