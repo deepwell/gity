@@ -11,8 +11,8 @@
 //! are its refs. Only rows scrolled into view get widgets, so a repository
 //! with hundreds of tags opens as quickly as one with a handful.
 
-use chrono::{DateTime, Utc};
 use gtk::{gio, glib, prelude::*};
+use jiff::{SignedDuration, Timestamp};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
@@ -1515,16 +1515,16 @@ fn natural_compare(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// Format a datetime as a relative time string (e.g., "2h", "3d", "1mo").
-fn format_time_ago(dt: DateTime<Utc>) -> String {
-    format_duration_ago(Utc::now().signed_duration_since(dt))
+fn format_time_ago(ts: Timestamp) -> String {
+    format_duration_ago(Timestamp::now().duration_since(ts))
 }
 
 /// Format an elapsed duration using the largest unit that is at least 1.
-fn format_duration_ago(duration: chrono::Duration) -> String {
-    let total_seconds = duration.num_seconds();
-    let total_minutes = duration.num_minutes();
-    let total_hours = duration.num_hours();
-    let total_days = duration.num_days();
+fn format_duration_ago(duration: SignedDuration) -> String {
+    let total_seconds = duration.as_secs();
+    let total_minutes = duration.as_mins();
+    let total_hours = duration.as_hours();
+    let total_days = total_hours / 24;
 
     if total_seconds < 60 {
         "just now".to_string()
@@ -1548,12 +1548,11 @@ fn format_duration_ago(duration: chrono::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn branch(name: &str, timestamp: i64) -> BranchInfo {
         BranchInfo {
             name: name.to_string(),
-            latest_commit_time: Utc.timestamp_opt(timestamp, 0).unwrap(),
+            latest_commit_time: Timestamp::from_second(timestamp).unwrap(),
         }
     }
 
@@ -1662,7 +1661,7 @@ mod tests {
             name: "stash@{0}".to_string(),
             message: "WIP on main: fix crash".to_string(),
             sha: "abc".to_string(),
-            time: Utc.timestamp_opt(100, 0).unwrap(),
+            time: Timestamp::from_second(100).unwrap(),
         });
         assert_eq!(entry.label, "WIP on main: fix crash");
         assert_eq!(entry.tooltip, "stash@{0}: WIP on main: fix crash");
@@ -1698,23 +1697,23 @@ mod tests {
     }
 
     fn ago_days(days: i64) -> String {
-        format_duration_ago(chrono::Duration::days(days))
+        format_duration_ago(SignedDuration::from_hours(days * 24))
     }
 
     #[test]
     fn format_duration_ago_uses_small_units_under_a_week() {
         assert_eq!(
-            format_duration_ago(chrono::Duration::seconds(-5)),
+            format_duration_ago(SignedDuration::from_secs(-5)),
             "just now"
         );
         assert_eq!(
-            format_duration_ago(chrono::Duration::seconds(59)),
+            format_duration_ago(SignedDuration::from_secs(59)),
             "just now"
         );
-        assert_eq!(format_duration_ago(chrono::Duration::seconds(60)), "1m");
-        assert_eq!(format_duration_ago(chrono::Duration::minutes(59)), "59m");
-        assert_eq!(format_duration_ago(chrono::Duration::hours(1)), "1h");
-        assert_eq!(format_duration_ago(chrono::Duration::hours(23)), "23h");
+        assert_eq!(format_duration_ago(SignedDuration::from_secs(60)), "1m");
+        assert_eq!(format_duration_ago(SignedDuration::from_mins(59)), "59m");
+        assert_eq!(format_duration_ago(SignedDuration::from_hours(1)), "1h");
+        assert_eq!(format_duration_ago(SignedDuration::from_hours(23)), "23h");
         assert_eq!(ago_days(1), "1d");
         assert_eq!(ago_days(6), "6d");
     }

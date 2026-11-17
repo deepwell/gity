@@ -1,9 +1,9 @@
-use chrono::prelude::*;
 use git2::{
     Commit, Delta, Diff, DiffDelta, DiffFile, DiffFindOptions, DiffFormat, DiffLineType,
     DiffOptions, Error, FileMode, ObjectType, Oid, Pathspec, Repository, Signature, StatusOptions,
     Time,
 };
+use jiff::{Timestamp, tz::TimeZone};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -575,24 +575,40 @@ fn match_with_parent(
 }
 
 fn format_datetime(time: &Time) -> String {
-    let dt = Local.timestamp_opt(time.seconds(), 0).unwrap();
-    dt.format("%b %d, %Y %H:%M").to_string()
+    git_time_to_local(*time)
+        .strftime("%b %d, %Y %H:%M")
+        .to_string()
 }
 
 /// Compact date used in the commit header subtitle, e.g. `Aug 23, 17:02`.
 fn format_datetime_short(time: &Time) -> String {
-    let dt = Local.timestamp_opt(time.seconds(), 0).unwrap();
-    dt.format("%b %d, %H:%M").to_string()
+    git_time_to_local(*time)
+        .strftime("%b %d, %H:%M")
+        .to_string()
 }
 
-fn git_time_to_utc(time: Time) -> DateTime<Utc> {
-    Utc.timestamp_opt(time.seconds(), 0).unwrap()
+/// The commit's instant in the user's time zone. The offset stored with the
+/// commit is ignored, so every date is shown in the viewer's local time.
+fn git_time_to_local(time: Time) -> jiff::ZonedDateTime {
+    git_time_to_timestamp(time).to_zoned_datetime(TimeZone::system())
+}
+
+/// Git stores commit times as an arbitrary i64, so a corrupt or crafted
+/// commit can lie outside jiff's year -9999..=9999 range. Clamp rather than
+/// panic so one bad commit can't take down the commit list or ref panel.
+fn git_time_to_timestamp(time: Time) -> Timestamp {
+    let seconds = time.seconds();
+    Timestamp::from_second(seconds).unwrap_or(if seconds < 0 {
+        Timestamp::MIN
+    } else {
+        Timestamp::MAX
+    })
 }
 
 #[derive(Clone)]
 pub struct BranchInfo {
     pub name: String,
-    pub latest_commit_time: DateTime<Utc>,
+    pub latest_commit_time: Timestamp,
 }
 
 pub fn get_local_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
@@ -605,7 +621,7 @@ pub fn get_local_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
         if let Some(name) = branch.name()? {
             // Get latest commit time for this branch
             if let Ok(commit) = branch.get().peel_to_commit() {
-                let commit_time = git_time_to_utc(commit.time());
+                let commit_time = git_time_to_timestamp(commit.time());
 
                 branch_infos.push(BranchInfo {
                     name: name.to_string(),
@@ -631,7 +647,7 @@ pub fn get_remote_branches(path: &str) -> Result<Vec<BranchInfo>, Error> {
                 continue;
             }
             if let Ok(commit) = branch.get().peel_to_commit() {
-                let commit_time = git_time_to_utc(commit.time());
+                let commit_time = git_time_to_timestamp(commit.time());
 
                 branch_infos.push(BranchInfo {
                     name: name.to_string(),
@@ -689,7 +705,7 @@ pub fn classify_ref(path: &Path, ref_name: &str) -> RefClassification {
 #[derive(Clone)]
 pub struct TagInfo {
     pub name: String,
-    pub commit_time: DateTime<Utc>,
+    pub commit_time: Timestamp,
 }
 
 /// Every tag in the repository, read in one pass.
@@ -736,7 +752,7 @@ pub fn get_repo_tags(path: &Path) -> Result<RepoTags, Error> {
         if let Some(commit) = commit {
             list.push(TagInfo {
                 name,
-                commit_time: git_time_to_utc(commit.time()),
+                commit_time: git_time_to_timestamp(commit.time()),
             });
         }
 
@@ -762,7 +778,7 @@ pub struct StashInfo {
     pub name: String,
     pub message: String,
     pub sha: String,
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
 }
 
 /// Returns the repository's stash entries, newest first.
@@ -783,7 +799,7 @@ pub fn get_stash_list(path: &Path) -> Result<Vec<StashInfo>, Error> {
                 name: format!("stash@{{{index}}}"),
                 message,
                 sha: oid.to_string(),
-                time: git_time_to_utc(commit.time()),
+                time: git_time_to_timestamp(commit.time()),
             })
         })
         .collect();
@@ -1305,9 +1321,26 @@ mod tests {
         let time = Time::new(1_700_000_000, -420);
 
         assert_eq!(
-            git_time_to_utc(time),
-            Utc.timestamp_opt(1_700_000_000, 0).unwrap()
+            git_time_to_timestamp(time),
+            Timestamp::from_second(1_700_000_000).unwrap()
         );
+    }
+
+    #[test]
+    fn out_of_range_commit_times_clamp_instead_of_panicking() {
+        // Beyond jiff's range but within chrono's, which previously displayed.
+        let far_future = Time::new(300_000_000_000, 0);
+        assert_eq!(git_time_to_timestamp(far_future), Timestamp::MAX);
+        assert_eq!(
+            git_time_to_timestamp(Time::new(i64::MAX, 0)),
+            Timestamp::MAX
+        );
+        assert_eq!(
+            git_time_to_timestamp(Time::new(i64::MIN, 0)),
+            Timestamp::MIN
+        );
+        assert!(format_datetime(&far_future).contains(", 9999 "));
+        assert!(!format_datetime(&Time::new(i64::MIN, 0)).is_empty());
     }
 
     use crate::test_support::TestRepo;
