@@ -570,7 +570,6 @@ fn reset_repo_view(ui: &WindowUi) {
     ui.repo_view.search_bar.set_search_mode(false);
     ui.repo_view.search_entry.set_text("");
     ui.repo_view.search_status_label.set_text("");
-    ui.repo_view.last_search_status.borrow_mut().clear();
 
     ui.repo_view.reset_diff(None);
 }

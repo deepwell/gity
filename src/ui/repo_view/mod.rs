@@ -25,7 +25,6 @@ pub struct RepoView {
     pub search_entry: gtk::SearchEntry,
     pub search_spinner: adw::Spinner,
     pub search_status_label: gtk::Label,
-    pub last_search_status: Rc<RefCell<String>>,
 
     // Panels
     pub ref_panel: RefPanel,
@@ -175,8 +174,6 @@ impl RepoView {
         let search_status_label = gtk::Label::builder().label("").build();
         search_status_label.set_width_chars(20);
         search_status_label.set_xalign(0.0);
-
-        let last_search_status: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
         let search_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -642,7 +639,6 @@ impl RepoView {
             search_entry,
             search_spinner,
             search_status_label,
-            last_search_status,
             ref_panel,
             commit_list,
             commit_paging_state,

@@ -79,12 +79,14 @@ impl SearchController {
         let current_cancel: std::rc::Rc<std::cell::RefCell<Option<Arc<AtomicBool>>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
 
-        // Cancel any in-flight search (and any pending debounce) when the search bar is hidden.
-        // This covers both the hide action and the ESC key handler (which directly toggles
-        // search mode on the bar).
+        // When the search bar is hidden, cancel any in-flight search (and any
+        // pending debounce) and clear the query, so the bar opens empty next
+        // time. This covers both the hide action and the ESC key handler
+        // (which directly toggles search mode on the bar).
         let debounce_source_for_hide = debounce_source.clone();
         let current_cancel_for_hide = current_cancel.clone();
         let search_spinner_for_hide = ui.repo_view.search_spinner.clone();
+        let search_entry_for_hide = ui.repo_view.search_entry.clone();
         ui.repo_view
             .search_bar
             .connect_search_mode_enabled_notify(move |bar| {
@@ -104,6 +106,9 @@ impl SearchController {
 
                 // Clear loading indicator immediately.
                 search_spinner_for_hide.set_visible(false);
+
+                // The entry's change handler also clears the match count.
+                search_entry_for_hide.set_text("");
             });
 
         // Debounced search on text changes
@@ -130,7 +135,6 @@ impl SearchController {
 
             if text.is_empty() {
                 view_for_changed.search_status_label.set_text("");
-                view_for_changed.last_search_status.borrow_mut().clear();
                 return;
             }
 
@@ -138,7 +142,6 @@ impl SearchController {
             let query = clamp_search_query(text.as_str());
             if query.to_lowercase().is_empty() {
                 view_for_changed.search_status_label.set_text("");
-                view_for_changed.last_search_status.borrow_mut().clear();
                 return;
             }
 
@@ -250,20 +253,10 @@ impl SearchController {
     pub fn action_show_search(&self, ui: &WindowUi) -> gio::ActionEntry<gtk::ApplicationWindow> {
         let search_bar = ui.repo_view.search_bar.clone();
         let search_entry = ui.repo_view.search_entry.clone();
-        let search_status_label = ui.repo_view.search_status_label.clone();
-        let last_search_status = ui.repo_view.last_search_status.clone();
         gio::ActionEntry::builder("show-search")
             .activate(move |_, _, _| {
                 search_bar.set_search_mode(true);
                 search_entry.grab_focus();
-
-                let text = search_entry.text();
-                if !text.is_empty() {
-                    let status = last_search_status.borrow().clone();
-                    if !status.is_empty() {
-                        search_status_label.set_text(&status);
-                    }
-                }
             })
             .build()
     }
@@ -391,7 +384,6 @@ struct SearchResultView {
     scrolled_window: gtk::ScrolledWindow,
     search_spinner: adw::Spinner,
     search_status_label: gtk::Label,
-    last_search_status: Rc<RefCell<String>>,
     commit_paging_state: Rc<RefCell<CommitPagingState>>,
     search_entry: gtk::SearchEntry,
 }
@@ -405,7 +397,6 @@ impl SearchResultView {
             scrolled_window: ui.repo_view.commit_list.widget.clone(),
             search_spinner: ui.repo_view.search_spinner.clone(),
             search_status_label: ui.repo_view.search_status_label.clone(),
-            last_search_status: ui.repo_view.last_search_status.clone(),
             commit_paging_state: ui.repo_view.commit_paging_state.clone(),
             search_entry: ui.repo_view.search_entry.clone(),
         }
@@ -499,7 +490,6 @@ fn try_process_search_result(
         scrolled_window,
         search_spinner,
         search_status_label,
-        last_search_status,
         ..
     } = view;
     handler.process_search_result_async(
@@ -513,7 +503,6 @@ fn try_process_search_result(
                 None => String::new(),
             };
             search_status_label.set_text(&status_text);
-            *last_search_status.borrow_mut() = status_text;
             search_spinner.set_visible(false);
         },
     );
