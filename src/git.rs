@@ -265,7 +265,8 @@ pub fn default_branch_ref(path: &Path) -> String {
     let head = repo.head().ok();
     let head_branch_name = head
         .as_ref()
-        .and_then(|h| if h.is_branch() { h.shorthand() } else { None })
+        .filter(|h| h.is_branch())
+        .and_then(|h| h.shorthand().ok())
         .map(|s| s.to_string());
 
     if let Some(current) = head_branch_name.as_deref()
@@ -485,7 +486,7 @@ impl<'repo> CommitWalker<'repo> {
         if !sig_matches(&commit.committer(), self.opts.committer_contains.as_deref()) {
             return Ok(false);
         }
-        if !log_message_matches(commit.message(), self.opts.message_contains.as_deref()) {
+        if !log_message_matches(commit.message().ok(), self.opts.message_contains.as_deref()) {
             return Ok(false);
         }
 
@@ -948,7 +949,7 @@ pub fn ref_has_worktree_changes(path: &Path, ref_name: &str) -> bool {
         return false;
     };
     let checked_out =
-        ref_name == "HEAD" || (head.is_branch() && head.shorthand() == Some(ref_name));
+        ref_name == "HEAD" || (head.is_branch() && head.shorthand().ok() == Some(ref_name));
     if !checked_out {
         return false;
     }
@@ -1092,7 +1093,7 @@ pub fn checked_out_branch_name(path: &Path) -> Option<String> {
     if !head.is_branch() {
         return None;
     }
-    head.shorthand().map(|s| s.to_string())
+    head.shorthand().ok().map(|s| s.to_string())
 }
 
 /// Returns the name and HEAD commit SHA of the repository's primary branch
@@ -1127,7 +1128,7 @@ pub fn get_branch_upstream(path: &Path, branch_ref: &str) -> Option<(String, Str
         if !head.is_branch() {
             return None;
         }
-        head.shorthand().map(|s| s.to_string())?
+        head.shorthand().ok().map(|s| s.to_string())?
     } else {
         branch_ref.to_string()
     };
@@ -1830,7 +1831,7 @@ mod tests {
         assert_eq!(light.target(), Some(tip));
         let annotated = tr.repo().find_reference("refs/tags/annotated").unwrap();
         let tag = annotated.peel_to_tag().unwrap();
-        assert_eq!(tag.message(), Some("Release"));
+        assert_eq!(tag.message().unwrap(), Some("Release"));
         assert_eq!(tag.target_id(), tip);
 
         let tags = get_repo_tags(tr.path()).unwrap().by_commit;
