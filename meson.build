@@ -1,5 +1,5 @@
 project('gity', 'rust',
-  version: '2026.7',
+  version: '2026.8',
   license: 'GPL-3.0-or-later',
   meson_version: '>= 1.0.0',
 )

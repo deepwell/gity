@@ -53,6 +53,19 @@
   </screenshots>
 
   <releases>
+    <release version="2026.8" date="2026-11-25">
+      <description>
+        <ul>
+          <li>Show uncommitted changes</li>
+          <li>Add Page Up, Page Down, Home and End keyboard shortcuts to the diff</li>
+          <li>Load branches and tags faster in repositories with many commits</li>
+          <li>Keep keyboard focus in place when the view refreshes</li>
+          <li>Clear the search field when it is closed</li>
+          <li>Fix a bug where ref ages that are just under a year was showing as 0y instead of 1y</li>
+        </ul>
+      </description>
+    </release>
+
     <release version="2026.7" date="2026-10-26">
       <description>
         <ul>
